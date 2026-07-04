@@ -10,6 +10,8 @@ Gemini бесплатный, поэтому работает по-настоящ
 """
 
 import json
+import time
+
 import httpx
 
 import config
@@ -19,9 +21,17 @@ GEMINI_URL = (
     "models/gemini-2.5-flash:generateContent"
 )
 
+# Временные ошибки Gemini (перегрузка сервера / превышен лимит запросов в минуту)
+_RETRYABLE_STATUS_CODES = {429, 503}
+_MAX_RETRIES = 3
+
 
 def _call_gemini(prompt_text: str, temperature: float = 0.7) -> str:
-    """Низкоуровневый вызов Gemini API. Возвращает текст ответа."""
+    """Низкоуровневый вызов Gemini API. Возвращает текст ответа.
+
+    При временных ошибках (429/503) повторяет запрос с нарастающей паузой,
+    так как бесплатный тариф Gemini иногда перегружен или ограничивает частоту.
+    """
     payload = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
@@ -29,14 +39,22 @@ def _call_gemini(prompt_text: str, temperature: float = 0.7) -> str:
             "maxOutputTokens": 2048,
         },
     }
-    resp = httpx.post(
-        f"{GEMINI_URL}?key={config.GEMINI_API_KEY}",
-        json=payload,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    for attempt in range(1, _MAX_RETRIES + 1):
+        resp = httpx.post(
+            f"{GEMINI_URL}?key={config.GEMINI_API_KEY}",
+            json=payload,
+            timeout=60,
+        )
+        if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+            wait_sec = 5 * attempt
+            print(f"   ⏳ Gemini временно недоступен ({resp.status_code}), "
+                  f"повтор через {wait_sec} сек...")
+            time.sleep(wait_sec)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def _parse_json(raw: str) -> dict:
