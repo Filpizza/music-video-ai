@@ -26,17 +26,22 @@ _RETRYABLE_STATUS_CODES = {429, 503}
 _MAX_RETRIES = 3
 
 
-def _call_gemini(prompt_text: str, temperature: float = 0.7) -> str:
+def _call_gemini(prompt_text: str, temperature: float = 0.7, max_output_tokens: int = 4096) -> str:
     """Низкоуровневый вызов Gemini API. Возвращает текст ответа.
 
     При временных ошибках (429/503) повторяет запрос с нарастающей паузой,
     так как бесплатный тариф Gemini иногда перегружен или ограничивает частоту.
+
+    thinkingBudget=0 отключает "размышления" модели — gemini-2.5-flash тратит
+    на них часть maxOutputTokens ещё до основного ответа, из-за чего ответ
+    иногда обрывался на середине (нужен полный бюджет под сам текст/JSON).
     """
     payload = {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "temperature": temperature,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": max_output_tokens,
+            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
 
@@ -133,8 +138,17 @@ def plan_scenes(music_prompt: str, lyrics: str, num_scenes: int = 5) -> dict:
         f'"image_prompt": "detailed English prompt for image generation", '
         f'"mood": "..."}}]}}'
     )
-    raw = _call_gemini(instruction, temperature=0.9)
-    result = _parse_json(raw)
+    max_tokens = 1024 + 500 * num_scenes  # больше сцен — длиннее JSON-ответ
+    for attempt in range(1, _MAX_RETRIES + 1):
+        raw = _call_gemini(instruction, temperature=0.9, max_output_tokens=max_tokens)
+        try:
+            result = _parse_json(raw)
+            break
+        except json.JSONDecodeError:
+            if attempt == _MAX_RETRIES:
+                raise
+            print(f"   ⏳ Ответ Gemini обрезан/некорректен, повтор попытки {attempt + 1}...")
+
     print(f"   ✅ Создано {len(result.get('scenes', []))} сцен")
     return result
 
