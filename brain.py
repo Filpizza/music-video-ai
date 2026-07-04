@@ -16,7 +16,7 @@ import config
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
-    "models/gemini-1.5-flash:generateContent"
+    "models/gemini-2.5-flash:generateContent"
 )
 
 
