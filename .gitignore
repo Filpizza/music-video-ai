@@ -1,0 +1,19 @@
+# Секреты — НИКОГДА не заливать на GitHub
+.env
+
+# Виртуальное окружение Python
+venv/
+__pycache__/
+*.pyc
+
+# Рабочие и выходные файлы (тяжёлые, не нужны в репозитории)
+work/
+output/
+assets/*.mp3
+assets/*.mp4
+assets/*.png
+assets/*.jpg
+
+# Системные файлы
+.DS_Store
+Thumbs.db
