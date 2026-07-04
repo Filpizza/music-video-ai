@@ -26,12 +26,14 @@ import assembler
 import config
 
 
-def create_music_video(user_prompt: str, num_scenes: int = 3) -> dict:
+def create_music_video(user_prompt: str, num_scenes: int = 3, on_progress=None) -> dict:
     """
     Главная функция. Прогоняет весь pipeline от промпта до готового ролика.
 
-    user_prompt — исходное описание клипа от пользователя
-    num_scenes  — сколько сцен построить
+    user_prompt  — исходное описание клипа от пользователя
+    num_scenes   — сколько сцен построить
+    on_progress  — необязательная функция(step: str, percent: int), вызывается
+                   при переходе на новый этап (нужно веб-интерфейсу для прогресс-бара)
 
     Возвращает словарь:
       {
@@ -41,6 +43,10 @@ def create_music_video(user_prompt: str, num_scenes: int = 3) -> dict:
         "scenes": список сцен с их путями к клипам
       }
     """
+    def notify(step: str, percent: int):
+        if on_progress:
+            on_progress(step, percent)
+
     duration_sec = num_scenes * config.CLIP_DURATION
 
     print("=" * 60)
@@ -48,31 +54,43 @@ def create_music_video(user_prompt: str, num_scenes: int = 3) -> dict:
     print("=" * 60)
 
     print("\n[1/5] Улучшение промпта")
+    notify("Улучшение промпта", 5)
     improved_prompt = brain.improve_prompt(user_prompt)
 
     print("\n[2/5] Генерация музыки")
+    notify("Генерация музыки", 15)
     music = music_generator.generate_music(improved_prompt, duration_sec)
 
     print("\n[3/5] Планирование сцен")
+    notify("Планирование сцен", 25)
     plan = brain.plan_scenes(improved_prompt, music["lyrics"], num_scenes)
 
     print(f"\n[4/5] Генерация {len(plan['scenes'])} клипов")
     clip_paths = []
-    for scene in plan["scenes"]:
+    total_scenes = len(plan["scenes"])
+    for i, scene in enumerate(plan["scenes"]):
+        scene_percent = 25 + int(60 * i / total_scenes)
+        notify(f"Сцена {scene['id']}/{total_scenes}: картинка", scene_percent)
         image = image_generator.generate_image(scene["image_prompt"], scene["id"])
+
+        notify(f"Сцена {scene['id']}/{total_scenes}: видео", scene_percent)
         video = video_generator.generate_video(image["image_path"], scene["id"])
+
+        notify(f"Сцена {scene['id']}/{total_scenes}: проверка качества", scene_percent)
         quality = quality_checker.check_quality(video["video_path"], scene["id"])
         if not quality["passed"]:
             print(f"   ⚠️  Сцена {scene['id']} не прошла проверку: {quality['reason']}")
         clip_paths.append(video["video_path"])
 
     print("\n[5/5] Склейка финального ролика")
+    notify("Склейка финального ролика", 90)
     output_name = f"{_slugify(music['title'])}.mp4"
     final = assembler.assemble_video(clip_paths, music["audio_path"], output_name)
 
     print("\n" + "=" * 60)
     print(f"ГОТОВО: {final['output_path']}")
     print("=" * 60)
+    notify("Готово", 100)
 
     return {
         "output_path": final["output_path"],

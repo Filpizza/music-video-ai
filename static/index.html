@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Music Video AI</title>
+<style>
+  body {
+    font-family: -apple-system, Segoe UI, Arial, sans-serif;
+    max-width: 640px;
+    margin: 40px auto;
+    padding: 0 20px;
+    background: #14161a;
+    color: #eee;
+  }
+  h1 { font-size: 22px; }
+  .mode-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: bold;
+    margin-bottom: 20px;
+  }
+  .mode-dry_run { background: #1f7a3f; color: white; }
+  .mode-production { background: #a12b2b; color: white; }
+  label { display: block; margin-top: 16px; margin-bottom: 6px; font-size: 14px; color: #bbb; }
+  textarea, select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid #333;
+    background: #1e2126;
+    color: #eee;
+    font-size: 14px;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    margin-top: 20px;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #3d7cf4;
+    color: white;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  button:disabled { background: #555; cursor: not-allowed; }
+  #progress-wrap {
+    margin-top: 24px;
+    display: none;
+  }
+  #progress-bar-bg {
+    background: #2a2d33;
+    border-radius: 8px;
+    overflow: hidden;
+    height: 22px;
+  }
+  #progress-bar {
+    height: 100%;
+    width: 0%;
+    background: #3d7cf4;
+    transition: width 0.3s ease;
+  }
+  #progress-step { margin-top: 8px; font-size: 14px; color: #bbb; }
+  #error-box {
+    display: none;
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    background: #3a1d1d;
+    color: #ff9d9d;
+    font-size: 14px;
+  }
+  #result-box { margin-top: 20px; display: none; }
+  video { width: 100%; border-radius: 8px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h1>🎬 Music Video AI</h1>
+  <span id="mode-badge" class="mode-badge">...</span>
+
+  <label for="prompt">Промпт (о чём песня/клип)</label>
+  <textarea id="prompt" placeholder="Например: грустная песня о дожде"></textarea>
+
+  <label for="style">Стиль музыки</label>
+  <select id="style"></select>
+
+  <label for="duration">Длительность ролика</label>
+  <select id="duration"></select>
+
+  <button id="start-btn" onclick="startGeneration()">Создать клип</button>
+
+  <div id="progress-wrap">
+    <div id="progress-bar-bg"><div id="progress-bar"></div></div>
+    <div id="progress-step">...</div>
+  </div>
+
+  <div id="error-box"></div>
+
+  <div id="result-box">
+    <strong id="result-title"></strong>
+    <video id="result-video" controls></video>
+  </div>
+
+<script>
+let polling = null;
+
+async function loadConfig() {
+  const res = await fetch("/api/config");
+  const cfg = await res.json();
+
+  const badge = document.getElementById("mode-badge");
+  badge.textContent = cfg.mode === "dry_run" ? "DRY RUN — бесплатно" : "PRODUCTION — тратит деньги";
+  badge.className = "mode-badge mode-" + cfg.mode;
+
+  const styleSelect = document.getElementById("style");
+  cfg.styles.forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = s; opt.textContent = s;
+    styleSelect.appendChild(opt);
+  });
+
+  const durationSelect = document.getElementById("duration");
+  cfg.duration_options.forEach(numScenes => {
+    const seconds = numScenes * cfg.clip_duration;
+    const opt = document.createElement("option");
+    opt.value = numScenes;
+    opt.textContent = `${seconds} сек (${numScenes} сцен)`;
+    durationSelect.appendChild(opt);
+  });
+}
+
+async function startGeneration() {
+  const prompt = document.getElementById("prompt").value;
+  const style = document.getElementById("style").value;
+  const numScenes = parseInt(document.getElementById("duration").value, 10);
+
+  document.getElementById("error-box").style.display = "none";
+  document.getElementById("result-box").style.display = "none";
+
+  const res = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, style, num_scenes: numScenes }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    showError(err.detail || "Не удалось запустить генерацию");
+    return;
+  }
+
+  document.getElementById("start-btn").disabled = true;
+  document.getElementById("progress-wrap").style.display = "block";
+  polling = setInterval(pollStatus, 1000);
+}
+
+async function pollStatus() {
+  const res = await fetch("/api/status");
+  const status = await res.json();
+
+  document.getElementById("progress-bar").style.width = (status.percent || 0) + "%";
+  document.getElementById("progress-step").textContent = status.step || "";
+
+  if (status.status === "done") {
+    clearInterval(polling);
+    document.getElementById("start-btn").disabled = false;
+    document.getElementById("result-title").textContent = "Готово: " + status.title;
+    document.getElementById("result-video").src = "/api/video?" + Date.now();
+    document.getElementById("result-box").style.display = "block";
+  } else if (status.status === "error") {
+    clearInterval(polling);
+    document.getElementById("start-btn").disabled = false;
+    showError(status.error || "Произошла ошибка");
+  }
+}
+
+function showError(message) {
+  const box = document.getElementById("error-box");
+  box.textContent = "Ошибка: " + message;
+  box.style.display = "block";
+}
+
+loadConfig();
+</script>
+</body>
+</html>
