@@ -1,9 +1,15 @@
 """
 brain.py — "мозг" проекта на основе Gemini.
 
+Универсальный промпт-движок: пользователь даёт короткую идею, а Gemini,
+выступая в роли эксперта-музыканта и режиссёра, сам определяет жанр,
+характеристики музыки и подходящий под неё визуальный стиль. Никаких
+захардкоженных правил под конкретные жанры — вся экспертиза берётся у Gemini,
+поэтому подход одинаково работает для techno, phonk, lo-fi, оркестра, джаза и т.д.
+
 Делает две вещи:
-  1. improve_prompt()  — улучшает твой промпт для лучшего понимания ИИ
-  2. plan_scenes()     — строит план сцен для клипа
+  1. improve_prompt()  — превращает идею в структурированный музыкальный бриф
+  2. plan_scenes()     — строит план сцен, визуально соответствующий этой музыке
 
 Gemini бесплатный, поэтому работает по-настоящему если вставлен GEMINI_API_KEY.
 Если ключа нет — возвращает разумную заглушку (для теста без ключа).
@@ -81,76 +87,192 @@ def _parse_json(raw: str) -> dict:
         raise
 
 
-# ─────────────────────────────────────────────────────────────
-#  1. Улучшение промпта
-# ─────────────────────────────────────────────────────────────
-def improve_prompt(user_prompt: str) -> str:
-    """Превращает короткий промпт пользователя в детальный музыкальный промпт."""
-    print(f"\n🧠 Улучшаю промпт...")
-    print(f"   Было: {user_prompt}")
-
-    if not config.GEMINI_API_KEY:
-        improved = (
-            f"{user_prompt}, professional production, clear melody, "
-            f"balanced mix, emotional depth, high quality audio"
-        )
-        print(f"   ⚠️  [Заглушка, нет ключа] Стало: {improved}")
-        return improved
-
-    instruction = (
-        "You are a music production expert. Improve this music prompt for an "
-        "AI music generator (like Suno). Add genre, tempo, instruments, mood, "
-        "and structure. Keep it under 200 characters. Reply with ONLY the "
-        f"improved prompt, nothing else.\n\nPrompt: {user_prompt}"
-    )
-    improved = _call_gemini(instruction, temperature=0.8).strip()
-    print(f"   ✅ Стало: {improved}")
-    return improved
-
-
-# ─────────────────────────────────────────────────────────────
-#  2. Планирование сцен
-# ─────────────────────────────────────────────────────────────
-def plan_scenes(music_prompt: str, lyrics: str, num_scenes: int = 5) -> dict:
-    """Строит план визуальных сцен для клипа под музыку."""
-    print(f"\n🎬 Планирую {num_scenes} сцен...")
-
-    if not config.GEMINI_API_KEY:
-        scenes = [
-            {
-                "id": i + 1,
-                "description": f"Сцена {i + 1} для: {music_prompt}",
-                "image_prompt": f"cinematic scene {i + 1}, {music_prompt}, high detail",
-                "mood": "atmospheric",
-            }
-            for i in range(num_scenes)
-        ]
-        print(f"   ⚠️  [Заглушка, нет ключа] Создано {num_scenes} сцен")
-        return {"scenes": scenes}
-
-    instruction = (
-        f"You are a music video director. Create a plan of {num_scenes} visual "
-        f"scenes for a music video.\n\n"
-        f"Music style: {music_prompt}\n"
-        f"Lyrics: {lyrics}\n\n"
-        f"Reply with ONLY valid JSON in this format:\n"
-        f'{{"scenes": [{{"id": 1, "description": "...", '
-        f'"image_prompt": "detailed English prompt for image generation", '
-        f'"mood": "..."}}]}}'
-    )
-    max_tokens = 1024 + 500 * num_scenes  # больше сцен — длиннее JSON-ответ
+def _call_gemini_json(instruction: str, temperature: float, max_output_tokens: int) -> dict:
+    """Вызывает Gemini и парсит JSON-ответ, повторяя запрос, если JSON пришёл битым/обрезанным."""
     for attempt in range(1, _MAX_RETRIES + 1):
-        raw = _call_gemini(instruction, temperature=0.9, max_output_tokens=max_tokens)
+        raw = _call_gemini(instruction, temperature=temperature, max_output_tokens=max_output_tokens)
         try:
-            result = _parse_json(raw)
-            break
+            return _parse_json(raw)
         except json.JSONDecodeError:
             if attempt == _MAX_RETRIES:
                 raise
             print(f"   ⏳ Ответ Gemini обрезан/некорректен, повтор попытки {attempt + 1}...")
 
-    print(f"   ✅ Создано {len(result.get('scenes', []))} сцен")
+
+# ─────────────────────────────────────────────────────────────
+#  1. Улучшение промпта → структурированный музыкальный бриф
+# ─────────────────────────────────────────────────────────────
+def improve_prompt(user_prompt: str, mood_hint: str = "", bpm_hint: str = "") -> dict:
+    """
+    Превращает короткую идею пользователя в структурированный музыкальный бриф.
+
+    user_prompt — идея пользователя, в любом жанре ("грустная баллада",
+                  "агрессивный phonk", "спокойный ambient" и т.д.)
+    mood_hint   — необязательная подсказка по настроению (если пусто — решает Gemini)
+    bpm_hint    — необязательная подсказка по темпу (если пусто — решает Gemini)
+
+    Возвращает словарь:
+      {
+        "genre": жанр,
+        "sub_genre": под-жанр,
+        "bpm": диапазон темпа, например "120-130",
+        "mood": настроение,
+        "key_instruments": [список ключевых инструментов],
+        "vocal_type": тип вокала или "instrumental",
+        "suno_prompt": готовый промпт для Suno с тегами стиля,
+        "negative_tags": [чего в музыке быть не должно],
+      }
+    """
+    print(f"\n🧠 Улучшаю промпт...")
+    print(f"   Было: {user_prompt}")
+
+    if not config.GEMINI_API_KEY:
+        result = _stub_music_brief(user_prompt, mood_hint, bpm_hint)
+        print(f"   ⚠️  [Заглушка, нет ключа] Жанр: {result['genre']}")
+        return result
+
+    hints = []
+    if mood_hint:
+        hints.append(f"Desired mood: {mood_hint}")
+    if bpm_hint:
+        hints.append(f"Desired tempo (BPM): {bpm_hint}")
+    hints_text = ("\n" + "\n".join(hints)) if hints else ""
+
+    instruction = (
+        "You are a world-class music producer and A&R expert across every genre — "
+        "techno, phonk, lo-fi, synthwave, orchestral, jazz, ambient, ballads, rock, "
+        "and everything else. A user gave you a short idea for a track. Using your "
+        "own expertise, work out a complete music brief for an AI music generator "
+        "(like Suno). Do not follow rigid genre templates — reason about what "
+        "actually fits the specific genre implied by the idea.\n\n"
+        f'User\'s idea: "{user_prompt}"{hints_text}\n\n'
+        "Decide:\n"
+        "- genre: the primary genre\n"
+        "- sub_genre: a more specific sub-genre/style within it\n"
+        "- bpm: a realistic tempo range for this genre, as a string like \"120-130\"\n"
+        "- mood: the emotional character of the track\n"
+        "- key_instruments: 4-6 instruments/sounds that define this genre's sound\n"
+        "- vocal_type: e.g. \"female vocals\", \"male vocals\", \"instrumental\", "
+        "\"sampled vocal chops\" — whatever actually fits\n"
+        "- suno_prompt: a ready-to-use comma-separated style-tag prompt for Suno "
+        "(genre, sub-genre, mood, instruments, tempo, vocal type, production style)\n"
+        "- negative_tags: things that must NOT appear in this track (clashing "
+        "instruments, moods, or production styles)\n\n"
+        "Reply with ONLY valid JSON in this exact shape:\n"
+        '{"genre": "...", "sub_genre": "...", "bpm": "...", "mood": "...", '
+        '"key_instruments": ["...", "..."], "vocal_type": "...", '
+        '"suno_prompt": "...", "negative_tags": ["...", "..."]}'
+    )
+
+    result = _call_gemini_json(instruction, temperature=0.8, max_output_tokens=1536)
+    print(f"   ✅ Жанр: {result.get('genre')} / {result.get('sub_genre')} "
+          f"({result.get('bpm')} BPM, {result.get('mood')})")
+    print(f"   Suno-промпт: {result.get('suno_prompt')}")
     return result
+
+
+def _stub_music_brief(user_prompt: str, mood_hint: str, bpm_hint: str) -> dict:
+    """Заглушка на случай отсутствия GEMINI_API_KEY — просто для теста без ключа."""
+    return {
+        "genre": "Unknown",
+        "sub_genre": "Unknown",
+        "bpm": bpm_hint or "100-120",
+        "mood": mood_hint or "neutral",
+        "key_instruments": ["synth", "drums", "bass"],
+        "vocal_type": "instrumental",
+        "suno_prompt": f"{user_prompt}, professional production, balanced mix, high quality audio",
+        "negative_tags": [],
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+#  2. Планирование сцен под музыку
+# ─────────────────────────────────────────────────────────────
+def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5, palette_hint: str = "") -> dict:
+    """
+    Строит план визуальных сцен, подобранный под конкретную музыку из improve_prompt().
+
+    music         — словарь из improve_prompt() (жанр, настроение, инструменты и т.д.)
+    lyrics        — текст песни/тема (контекст для сюжета)
+    num_scenes    — сколько сцен построить
+    palette_hint  — необязательная подсказка по цветовой гамме (если пусто — решает Gemini)
+
+    Возвращает словарь:
+      {
+        "color_palette": единая цветовая гамма для всего ролика,
+        "scenes": [
+          {
+            "id": номер сцены,
+            "description": короткое описание того, что происходит,
+            "video_prompt": детальный промпт на английском для Veo/Kling,
+            "mood": настроение конкретной сцены,
+            "negative_tags": [чего в кадре быть не должно],
+          },
+          ...
+        ]
+      }
+    """
+    print(f"\n🎬 Планирую {num_scenes} сцен под жанр {music.get('genre')}...")
+
+    if not config.GEMINI_API_KEY:
+        result = _stub_scene_plan(music, num_scenes, palette_hint)
+        print(f"   ⚠️  [Заглушка, нет ключа] Создано {num_scenes} сцен")
+        return result
+
+    instruments = ", ".join(music.get("key_instruments", []))
+    palette_line = f"\nRequested color palette: {palette_hint}" if palette_hint else ""
+
+    instruction = (
+        "You are an award-winning music video director. You've been given a "
+        "fully-produced track and must design the visual concept for its music "
+        "video. The visual language MUST match the specific genre and mood — for "
+        "example, a slow melancholic ballad and an aggressive dark techno track "
+        "should look completely different.\n\n"
+        f"Track genre: {music.get('genre')} ({music.get('sub_genre')})\n"
+        f"Mood: {music.get('mood')}\n"
+        f"BPM: {music.get('bpm')}\n"
+        f"Instruments: {instruments}\n"
+        f"Vocal: {music.get('vocal_type')}\n"
+        f"Lyrics/theme: {lyrics}{palette_line}\n\n"
+        f"First, decide ONE consistent color_palette for the whole video (2-4 "
+        f"sentences describing tones/colors/lighting style) that will be shared "
+        f"across every scene for visual consistency.\n\n"
+        f"Then create a plan of {num_scenes} scenes that tell a visual story. "
+        f"For each scene write:\n"
+        "- description: short human-readable summary of what happens\n"
+        "- video_prompt: a detailed, cinematic English prompt for an AI video "
+        "generator (Kling/Veo) — include the shared color palette, camera "
+        "framing/movement, subject, setting, lighting, and genre-appropriate "
+        "visual style\n"
+        "- mood: this scene's emotional tone\n"
+        "- negative_tags: things that must NOT appear in this shot\n\n"
+        "Reply with ONLY valid JSON in this exact shape:\n"
+        '{"color_palette": "...", "scenes": [{"id": 1, "description": "...", '
+        '"video_prompt": "...", "mood": "...", "negative_tags": ["...", "..."]}]}'
+    )
+
+    max_tokens = 1024 + 500 * num_scenes  # больше сцен — длиннее JSON-ответ
+    result = _call_gemini_json(instruction, temperature=0.9, max_output_tokens=max_tokens)
+    print(f"   ✅ Создано {len(result.get('scenes', []))} сцен")
+    print(f"   Цветовая гамма: {result.get('color_palette')}")
+    return result
+
+
+def _stub_scene_plan(music: dict, num_scenes: int, palette_hint: str) -> dict:
+    """Заглушка на случай отсутствия GEMINI_API_KEY — просто для теста без ключа."""
+    genre = music.get("genre", "Unknown")
+    palette = palette_hint or "neutral, balanced tones"
+    scenes = [
+        {
+            "id": i + 1,
+            "description": f"Сцена {i + 1} для жанра {genre}",
+            "video_prompt": f"cinematic scene {i + 1}, {genre} music video, {palette}, high detail",
+            "mood": music.get("mood", "atmospheric"),
+            "negative_tags": [],
+        }
+        for i in range(num_scenes)
+    ]
+    return {"color_palette": palette, "scenes": scenes}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -159,10 +281,10 @@ def plan_scenes(music_prompt: str, lyrics: str, num_scenes: int = 5) -> dict:
 if __name__ == "__main__":
     config.check_config()
 
-    improved = improve_prompt("грустная песня о дожде")
+    music = improve_prompt("грустная песня о дожде")
 
     plan = plan_scenes(
-        music_prompt=improved,
+        music=music,
         lyrics="Дождь стучит по крыше, я вспоминаю тебя...",
         num_scenes=3,
     )
@@ -170,4 +292,4 @@ if __name__ == "__main__":
     print("\nПлан сцен:")
     for scene in plan.get("scenes", []):
         print(f"  Сцена {scene['id']}: {scene['description']}")
-        print(f"    image_prompt: {scene['image_prompt']}")
+        print(f"    video_prompt: {scene['video_prompt']}")

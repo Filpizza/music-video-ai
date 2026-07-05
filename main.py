@@ -1,18 +1,17 @@
 """
-main.py — оркестратor. Связывает все модули в единый pipeline.
+main.py — оркестратор. Связывает все модули в единый pipeline.
 
-Полный поток:
-  1. brain.improve_prompt()      — улучшаем промпт пользователя
-  2. music_generator.generate_music() — генерируем музыку
-  3. brain.plan_scenes()         — строим план визуальных сцен
-  4. для каждой сцены:
-       image_generator.generate_image()   — картинка
-       video_generator.generate_video()   — картинка → видеоклип
-       quality_checker.check_quality()    — проверка клипа
-  5. assembler.assemble_video()  — склейка всех клипов + музыки в финальный ролик
+Pipeline разбит на два шага, чтобы веб-интерфейс мог сначала показать
+пользователю сгенерированные промпты и только потом (по подтверждению)
+тратить время на рендер видео:
 
-Работает в dry_run (бесплатно, заглушки) или production (реальные API) — режим
-берётся из config.MODE.
+  create_preview()       — Gemini придумывает музыкальный бриф и план сцен
+                            (это единственное место, где идёт обращение к Gemini)
+  generate_from_preview() — картинки → видео → проверка → склейка,
+                            Gemini здесь больше не вызывается
+
+create_music_video() — удобная обёртка над обоими шагами сразу
+                        (используется в CLI-тесте и в режиме config.AUTO_MODE)
 """
 
 import re
@@ -26,52 +25,74 @@ import assembler
 import config
 
 
-def create_music_video(user_prompt: str, num_scenes: int = 3, on_progress=None) -> dict:
+def create_preview(user_prompt: str, num_scenes: int = 3,
+                    mood_hint: str = "", bpm_hint: str = "", palette_hint: str = "") -> dict:
     """
-    Главная функция. Прогоняет весь pipeline от промпта до готового ролика.
+    Шаг 1: промпт-инжиниринг без рендера видео.
 
-    user_prompt  — исходное описание клипа от пользователя
-    num_scenes   — сколько сцен построить
-    on_progress  — необязательная функция(step: str, percent: int), вызывается
-                   при переходе на новый этап (нужно веб-интерфейсу для прогресс-бара)
+    Вызывает Gemini дважды (музыкальный бриф + план сцен) и создаёт dry_run
+    заглушку аудио (бесплатно и локально через FFmpeg — нужна как источник
+    текста песни для планирования сцен).
+
+    Возвращает словарь:
+      {
+        "user_prompt": исходная идея,
+        "num_scenes": число сцен,
+        "music": бриф из brain.improve_prompt(),
+        "audio_path": путь к аудио-заглушке,
+        "lyrics": текст песни,
+        "title": название трека,
+        "color_palette": единая цветовая гамма ролика,
+        "scenes": список сцен с их video_prompt,
+      }
+    """
+    duration_sec = num_scenes * config.CLIP_DURATION
+
+    music = brain.improve_prompt(user_prompt, mood_hint=mood_hint, bpm_hint=bpm_hint)
+    audio = music_generator.generate_music(music["suno_prompt"], duration_sec)
+    plan = brain.plan_scenes(music, audio["lyrics"], num_scenes, palette_hint=palette_hint)
+
+    return {
+        "user_prompt": user_prompt,
+        "num_scenes": num_scenes,
+        "music": music,
+        "audio_path": audio["audio_path"],
+        "lyrics": audio["lyrics"],
+        "title": audio["title"],
+        "color_palette": plan["color_palette"],
+        "scenes": plan["scenes"],
+    }
+
+
+def generate_from_preview(preview: dict, on_progress=None) -> dict:
+    """
+    Шаг 2: превращает уже готовый предпросмотр в финальный ролик.
+    Gemini здесь не вызывается — все промпты уже согласованы на шаге 1.
+
+    on_progress — необязательная функция(step: str, percent: int) для прогресс-бара.
 
     Возвращает словарь:
       {
         "output_path": путь к готовому ролику,
         "title": название трека,
         "lyrics": текст песни,
-        "scenes": список сцен с их путями к клипам
+        "scenes": список сцен,
       }
     """
     def notify(step: str, percent: int):
         if on_progress:
             on_progress(step, percent)
 
-    duration_sec = num_scenes * config.CLIP_DURATION
-
-    print("=" * 60)
-    print("MUSIC VIDEO AI — ЗАПУСК PIPELINE")
-    print("=" * 60)
-
-    print("\n[1/5] Улучшение промпта")
-    notify("Улучшение промпта", 5)
-    improved_prompt = brain.improve_prompt(user_prompt)
-
-    print("\n[2/5] Генерация музыки")
-    notify("Генерация музыки", 15)
-    music = music_generator.generate_music(improved_prompt, duration_sec)
-
-    print("\n[3/5] Планирование сцен")
-    notify("Планирование сцен", 25)
-    plan = brain.plan_scenes(improved_prompt, music["lyrics"], num_scenes)
-
-    print(f"\n[4/5] Генерация {len(plan['scenes'])} клипов")
+    scenes = preview["scenes"]
+    total_scenes = len(scenes)
     clip_paths = []
-    total_scenes = len(plan["scenes"])
-    for i, scene in enumerate(plan["scenes"]):
-        scene_percent = 25 + int(60 * i / total_scenes)
+
+    print(f"\n[1/2] Генерация {total_scenes} клипов")
+    for i, scene in enumerate(scenes):
+        scene_percent = 10 + int(70 * i / total_scenes)
+
         notify(f"Сцена {scene['id']}/{total_scenes}: картинка", scene_percent)
-        image = image_generator.generate_image(scene["image_prompt"], scene["id"])
+        image = image_generator.generate_image(scene["video_prompt"], scene["id"])
 
         notify(f"Сцена {scene['id']}/{total_scenes}: видео", scene_percent)
         video = video_generator.generate_video(image["image_path"], scene["id"])
@@ -82,22 +103,38 @@ def create_music_video(user_prompt: str, num_scenes: int = 3, on_progress=None) 
             print(f"   ⚠️  Сцена {scene['id']} не прошла проверку: {quality['reason']}")
         clip_paths.append(video["video_path"])
 
-    print("\n[5/5] Склейка финального ролика")
+    print("\n[2/2] Склейка финального ролика")
     notify("Склейка финального ролика", 90)
-    output_name = f"{_slugify(music['title'])}.mp4"
-    final = assembler.assemble_video(clip_paths, music["audio_path"], output_name)
+    output_name = f"{_slugify(preview['title'])}.mp4"
+    final = assembler.assemble_video(clip_paths, preview["audio_path"], output_name)
 
-    print("\n" + "=" * 60)
-    print(f"ГОТОВО: {final['output_path']}")
-    print("=" * 60)
+    print(f"\nГОТОВО: {final['output_path']}")
     notify("Готово", 100)
 
     return {
         "output_path": final["output_path"],
-        "title": music["title"],
-        "lyrics": music["lyrics"],
-        "scenes": plan["scenes"],
+        "title": preview["title"],
+        "lyrics": preview["lyrics"],
+        "scenes": scenes,
     }
+
+
+def create_music_video(user_prompt: str, num_scenes: int = 3,
+                        mood_hint: str = "", bpm_hint: str = "", palette_hint: str = "",
+                        on_progress=None) -> dict:
+    """Удобная обёртка: весь pipeline сразу, без ручного предпросмотра (режим "автомат")."""
+    def notify(step: str, percent: int):
+        if on_progress:
+            on_progress(step, percent)
+
+    print("=" * 60)
+    print("MUSIC VIDEO AI — ЗАПУСК PIPELINE")
+    print("=" * 60)
+
+    notify("Улучшение промпта и планирование сцен", 5)
+    preview = create_preview(user_prompt, num_scenes, mood_hint, bpm_hint, palette_hint)
+
+    return generate_from_preview(preview, on_progress=on_progress)
 
 
 def _slugify(text: str) -> str:

@@ -6,13 +6,14 @@
 <style>
   body {
     font-family: -apple-system, Segoe UI, Arial, sans-serif;
-    max-width: 640px;
+    max-width: 720px;
     margin: 40px auto;
     padding: 0 20px;
     background: #14161a;
     color: #eee;
   }
   h1 { font-size: 22px; }
+  h2 { font-size: 16px; margin-top: 28px; color: #ddd; }
   .mode-badge {
     display: inline-block;
     padding: 3px 10px;
@@ -24,7 +25,7 @@
   .mode-dry_run { background: #1f7a3f; color: white; }
   .mode-production { background: #a12b2b; color: white; }
   label { display: block; margin-top: 16px; margin-bottom: 6px; font-size: 14px; color: #bbb; }
-  textarea, select {
+  textarea, select, input[type=text] {
     width: 100%;
     box-sizing: border-box;
     padding: 10px;
@@ -35,6 +36,17 @@
     font-size: 14px;
   }
   textarea { resize: vertical; min-height: 70px; }
+  .hints-row { display: flex; gap: 12px; }
+  .hints-row > div { flex: 1; }
+  .checkbox-row {
+    margin-top: 18px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #bbb;
+  }
+  .checkbox-row input { width: auto; }
   button {
     margin-top: 20px;
     width: 100%;
@@ -46,23 +58,11 @@
     font-size: 16px;
     cursor: pointer;
   }
+  button.secondary { background: #2a2d33; }
   button:disabled { background: #555; cursor: not-allowed; }
-  #progress-wrap {
-    margin-top: 24px;
-    display: none;
-  }
-  #progress-bar-bg {
-    background: #2a2d33;
-    border-radius: 8px;
-    overflow: hidden;
-    height: 22px;
-  }
-  #progress-bar {
-    height: 100%;
-    width: 0%;
-    background: #3d7cf4;
-    transition: width 0.3s ease;
-  }
+  #progress-wrap { margin-top: 24px; display: none; }
+  #progress-bar-bg { background: #2a2d33; border-radius: 8px; overflow: hidden; height: 22px; }
+  #progress-bar { height: 100%; width: 0%; background: #3d7cf4; transition: width 0.3s ease; }
   #progress-step { margin-top: 8px; font-size: 14px; color: #bbb; }
   #error-box {
     display: none;
@@ -73,24 +73,62 @@
     color: #ff9d9d;
     font-size: 14px;
   }
-  #result-box { margin-top: 20px; display: none; }
+  #preview-box, #result-box { display: none; margin-top: 20px; }
   video { width: 100%; border-radius: 8px; margin-top: 10px; }
+  .card {
+    background: #1e2126;
+    border: 1px solid #2c2f36;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-top: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .card .row { margin-bottom: 6px; }
+  .card .row b { color: #9db8ff; }
+  .tag {
+    display: inline-block;
+    background: #2a2d33;
+    border-radius: 6px;
+    padding: 2px 8px;
+    margin: 2px 4px 2px 0;
+    font-size: 12px;
+    color: #ddd;
+  }
+  .neg-tag { background: #3a1d1d; color: #ff9d9d; }
 </style>
 </head>
 <body>
   <h1>🎬 Music Video AI</h1>
   <span id="mode-badge" class="mode-badge">...</span>
 
-  <label for="prompt">Промпт (о чём песня/клип)</label>
-  <textarea id="prompt" placeholder="Например: грустная песня о дожде"></textarea>
+  <label for="prompt">Идея клипа (любой жанр — techno, phonk, lo-fi, оркестр, баллада...)</label>
+  <textarea id="prompt" placeholder="Например: агрессивный phonk про ночной город"></textarea>
 
-  <label for="style">Стиль музыки</label>
-  <select id="style"></select>
+  <div class="hints-row">
+    <div>
+      <label for="mood-hint">Настроение (необязательно)</label>
+      <input type="text" id="mood-hint" placeholder="Gemini решит сам">
+    </div>
+    <div>
+      <label for="bpm-hint">BPM (необязательно)</label>
+      <input type="text" id="bpm-hint" placeholder="Gemini решит сам">
+    </div>
+  </div>
+  <label for="palette-hint">Цветовая гамма клипа (необязательно)</label>
+  <input type="text" id="palette-hint" placeholder="Gemini решит сам">
 
   <label for="duration">Длительность ролика</label>
   <select id="duration"></select>
 
-  <button id="start-btn" onclick="startGeneration()">Создать клип</button>
+  <div class="checkbox-row">
+    <input type="checkbox" id="auto-mode">
+    <label for="auto-mode" style="margin:0;">Полный автомат (пропустить предпросмотр промптов)</label>
+  </div>
+
+  <button id="start-btn" onclick="onStartClick()">Показать промпты</button>
+
+  <div id="preview-box"></div>
 
   <div id="progress-wrap">
     <div id="progress-bar-bg"><div id="progress-bar"></div></div>
@@ -106,21 +144,15 @@
 
 <script>
 let polling = null;
+let cfg = null;
 
 async function loadConfig() {
   const res = await fetch("/api/config");
-  const cfg = await res.json();
+  cfg = await res.json();
 
   const badge = document.getElementById("mode-badge");
   badge.textContent = cfg.mode === "dry_run" ? "DRY RUN — бесплатно" : "PRODUCTION — тратит деньги";
   badge.className = "mode-badge mode-" + cfg.mode;
-
-  const styleSelect = document.getElementById("style");
-  cfg.styles.forEach(s => {
-    const opt = document.createElement("option");
-    opt.value = s; opt.textContent = s;
-    styleSelect.appendChild(opt);
-  });
 
   const durationSelect = document.getElementById("duration");
   cfg.duration_options.forEach(numScenes => {
@@ -130,28 +162,136 @@ async function loadConfig() {
     opt.textContent = `${seconds} сек (${numScenes} сцен)`;
     durationSelect.appendChild(opt);
   });
+
+  document.getElementById("auto-mode").checked = !!cfg.auto_mode_default;
+  updateButtonLabel();
 }
 
-async function startGeneration() {
-  const prompt = document.getElementById("prompt").value;
-  const style = document.getElementById("style").value;
-  const numScenes = parseInt(document.getElementById("duration").value, 10);
+function updateButtonLabel() {
+  const auto = document.getElementById("auto-mode").checked;
+  document.getElementById("start-btn").textContent = auto ? "Создать клип" : "Показать промпты";
+}
+document.getElementById("auto-mode").addEventListener("change", updateButtonLabel);
 
+function collectRequestBody() {
+  return {
+    prompt: document.getElementById("prompt").value,
+    num_scenes: parseInt(document.getElementById("duration").value, 10),
+    mood_hint: document.getElementById("mood-hint").value,
+    bpm_hint: document.getElementById("bpm-hint").value,
+    palette_hint: document.getElementById("palette-hint").value,
+  };
+}
+
+function resetPanels() {
   document.getElementById("error-box").style.display = "none";
   document.getElementById("result-box").style.display = "none";
+  document.getElementById("preview-box").style.display = "none";
+  document.getElementById("preview-box").innerHTML = "";
+}
 
-  const res = await fetch("/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, style, num_scenes: numScenes }),
+async function onStartClick() {
+  resetPanels();
+  const auto = document.getElementById("auto-mode").checked;
+  if (auto) {
+    await startAuto();
+  } else {
+    await startPreview();
+  }
+}
+
+async function startPreview() {
+  const btn = document.getElementById("start-btn");
+  btn.disabled = true;
+  btn.textContent = "Генерирую промпты... (10-20 сек)";
+
+  try {
+    const res = await fetch("/api/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectRequestBody()),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      showError(err.detail || "Не удалось сгенерировать промпты");
+      return;
+    }
+    const preview = await res.json();
+    renderPreview(preview);
+  } finally {
+    btn.disabled = false;
+    updateButtonLabel();
+  }
+}
+
+function renderPreview(preview) {
+  const m = preview.music;
+  const instruments = (m.key_instruments || []).map(t => `<span class="tag">${t}</span>`).join("");
+  const negTags = (m.negative_tags || []).map(t => `<span class="tag neg-tag">${t}</span>`).join("");
+
+  let html = `
+    <h2>🎵 Музыкальный бриф</h2>
+    <div class="card">
+      <div class="row"><b>Жанр:</b> ${m.genre} / ${m.sub_genre}</div>
+      <div class="row"><b>BPM:</b> ${m.bpm} &nbsp; <b>Настроение:</b> ${m.mood}</div>
+      <div class="row"><b>Вокал:</b> ${m.vocal_type}</div>
+      <div class="row"><b>Инструменты:</b><br>${instruments}</div>
+      <div class="row"><b>Suno-промпт:</b><br>${m.suno_prompt}</div>
+      ${negTags ? `<div class="row"><b>Не должно быть:</b><br>${negTags}</div>` : ""}
+    </div>
+
+    <h2>🎨 Цветовая гамма клипа</h2>
+    <div class="card">${preview.color_palette}</div>
+
+    <h2>🎬 Сцены (${preview.scenes.length})</h2>
+  `;
+
+  preview.scenes.forEach(scene => {
+    const sceneNeg = (scene.negative_tags || []).map(t => `<span class="tag neg-tag">${t}</span>`).join("");
+    html += `
+      <div class="card">
+        <div class="row"><b>Сцена ${scene.id}</b> — ${scene.mood}</div>
+        <div class="row">${scene.description}</div>
+        <div class="row" style="color:#9aa; font-size:13px;">${scene.video_prompt}</div>
+        ${sceneNeg ? `<div class="row">${sceneNeg}</div>` : ""}
+      </div>
+    `;
   });
 
+  html += `<button onclick="confirmGenerate('${preview.preview_id}')">Создать клип</button>`;
+
+  const box = document.getElementById("preview-box");
+  box.innerHTML = html;
+  box.style.display = "block";
+}
+
+async function confirmGenerate(previewId) {
+  const res = await fetch("/api/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preview_id: previewId }),
+  });
   if (!res.ok) {
     const err = await res.json();
     showError(err.detail || "Не удалось запустить генерацию");
     return;
   }
+  document.getElementById("start-btn").disabled = true;
+  document.getElementById("progress-wrap").style.display = "block";
+  polling = setInterval(pollStatus, 1000);
+}
 
+async function startAuto() {
+  const res = await fetch("/api/generate_auto", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collectRequestBody()),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    showError(err.detail || "Не удалось запустить генерацию");
+    return;
+  }
   document.getElementById("start-btn").disabled = true;
   document.getElementById("progress-wrap").style.display = "block";
   polling = setInterval(pollStatus, 1000);
