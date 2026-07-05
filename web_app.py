@@ -17,6 +17,7 @@ web_app.py — веб-интерфейс для запуска pipeline без �
 """
 
 import threading
+import traceback
 import uuid
 
 from fastapi import FastAPI, HTTPException
@@ -132,9 +133,13 @@ def _run_from_preview(preview_data: dict):
             job["output_path"] = result["output_path"]
             job["title"] = result["title"]
     except Exception as exc:
+        # Печатаем полный трейсбек в консоль сервера — иначе причина падения
+        # фонового потока теряется и остаётся только короткий текст ошибки.
+        traceback.print_exc()
         with job_lock:
             job["status"] = "error"
             job["error"] = str(exc)
+            job["traceback"] = traceback.format_exc()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -178,9 +183,13 @@ def _run_auto(prompt: str, num_scenes: int, mood_hint: str, bpm_hint: str, palet
             job["output_path"] = result["output_path"]
             job["title"] = result["title"]
     except Exception as exc:
+        # Печатаем полный трейсбек в консоль сервера — иначе причина падения
+        # фонового потока теряется и остаётся только короткий текст ошибки.
+        traceback.print_exc()
         with job_lock:
             job["status"] = "error"
             job["error"] = str(exc)
+            job["traceback"] = traceback.format_exc()
 
 
 # ─────────────────────────────────────────────────────────────

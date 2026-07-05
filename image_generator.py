@@ -9,18 +9,20 @@ image_generator.py — генерация изображений для сцен
 
 import hashlib
 import textwrap
+import uuid
 
 from PIL import Image, ImageDraw, ImageFont
 
 import config
 
 
-def generate_image(image_prompt: str, scene_id: int = 1) -> dict:
+def generate_image(image_prompt: str, scene_id: int = 1, run_id: str = None) -> dict:
     """
     Главная функция. Генерирует изображение по текстовому промпту.
 
     image_prompt — детальное описание сцены (на английском, для генератора картинок)
     scene_id     — номер сцены (используется в имени файла)
+    run_id       — id запуска для уникального имени файла (если None — сгенерируется)
 
     Возвращает словарь:
       {
@@ -33,7 +35,7 @@ def generate_image(image_prompt: str, scene_id: int = 1) -> dict:
     print(f"   Промпт: {image_prompt}")
 
     if config.MODE == "dry_run":
-        return _generate_dry_run(image_prompt, scene_id)
+        return _generate_dry_run(image_prompt, scene_id, run_id)
     else:
         return _generate_production(image_prompt, scene_id)
 
@@ -41,9 +43,10 @@ def generate_image(image_prompt: str, scene_id: int = 1) -> dict:
 # ─────────────────────────────────────────────────────────────
 #  DRY RUN — заглушка (бесплатно)
 # ─────────────────────────────────────────────────────────────
-def _generate_dry_run(image_prompt: str, scene_id: int) -> dict:
+def _generate_dry_run(image_prompt: str, scene_id: int, run_id: str = None) -> dict:
     """Создаёт цветную placeholder-картинку нужного размера через Pillow."""
-    output_path = config.IMAGES_DIR / f"scene_{scene_id}_dryrun.png"
+    run_id = run_id or uuid.uuid4().hex[:8]
+    output_path = config.IMAGES_DIR / f"scene_{scene_id}_{run_id}.png"
 
     # Цвет зависит от промпта — чтобы разные сцены визуально отличались
     color = _color_from_text(image_prompt)

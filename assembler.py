@@ -8,18 +8,29 @@ assembler.py — склейка клипов и аудио в финальный
 """
 
 import subprocess
+import uuid
 from pathlib import Path
 
 import config
 
 
-def assemble_video(clip_paths: list, audio_path: str, output_name: str = "final_video.mp4") -> dict:
+def _run_ffmpeg(cmd: list) -> None:
+    """Запускает FFmpeg и, если он упал, показывает его реальную ошибку (stderr)."""
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        error_text = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg завершился с ошибкой:\n{error_text}")
+
+
+def assemble_video(clip_paths: list, audio_path: str, output_name: str = "final_video.mp4",
+                   run_id: str = None) -> dict:
     """
     Главная функция. Склеивает клипы сцен и добавляет звук.
 
     clip_paths  — список путей к видеоклипам сцен, в нужном порядке
     audio_path  — путь к аудиофайлу (музыке)
     output_name — имя итогового файла
+    run_id      — id запуска для уникального имени временного списка (если None — сгенерируется)
 
     Возвращает словарь:
       {
@@ -30,8 +41,10 @@ def assemble_video(clip_paths: list, audio_path: str, output_name: str = "final_
     print(f"   Клипов: {len(clip_paths)}")
     print(f"   Аудио: {audio_path}")
 
+    run_id = run_id or uuid.uuid4().hex[:8]
     output_path = config.OUTPUT_DIR / output_name
-    concat_list_path = config.WORK_DIR / "concat_list.txt"
+    # Уникальное имя списка — чтобы параллельные склейки не писали в один файл
+    concat_list_path = config.WORK_DIR / f"concat_list_{run_id}.txt"
 
     with open(concat_list_path, "w", encoding="utf-8") as f:
         for clip_path in clip_paths:
@@ -48,7 +61,7 @@ def assemble_video(clip_paths: list, audio_path: str, output_name: str = "final_
         str(output_path)
     ]
 
-    subprocess.run(cmd, capture_output=True, check=True)
+    _run_ffmpeg(cmd)
 
     print(f"   ✅ Готовый ролик: {output_path.name}")
 

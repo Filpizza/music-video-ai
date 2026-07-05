@@ -8,17 +8,28 @@ video_generator.py — превращение картинки в видеокл
 """
 
 import subprocess
+import uuid
 
 import config
 
 
-def generate_video(image_path: str, scene_id: int = 1, duration_sec: int = None) -> dict:
+def _run_ffmpeg(cmd: list) -> None:
+    """Запускает FFmpeg и, если он упал, показывает его реальную ошибку (stderr)."""
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        error_text = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg завершился с ошибкой:\n{error_text}")
+
+
+def generate_video(image_path: str, scene_id: int = 1, duration_sec: int = None,
+                   run_id: str = None) -> dict:
     """
     Главная функция. Превращает картинку в видеоклип.
 
     image_path   — путь к исходной картинке сцены
     scene_id     — номер сцены (используется в имени файла)
     duration_sec — длина клипа в секундах (по умолчанию — config.CLIP_DURATION)
+    run_id       — id запуска для уникального имени файла (если None — сгенерируется)
 
     Возвращает словарь:
       {
@@ -34,7 +45,7 @@ def generate_video(image_path: str, scene_id: int = 1, duration_sec: int = None)
     print(f"   Длительность: {duration_sec} сек")
 
     if config.MODE == "dry_run":
-        return _generate_dry_run(image_path, scene_id, duration_sec)
+        return _generate_dry_run(image_path, scene_id, duration_sec, run_id)
     else:
         return _generate_production(image_path, scene_id, duration_sec)
 
@@ -42,9 +53,11 @@ def generate_video(image_path: str, scene_id: int = 1, duration_sec: int = None)
 # ─────────────────────────────────────────────────────────────
 #  DRY RUN — заглушка (бесплатно)
 # ─────────────────────────────────────────────────────────────
-def _generate_dry_run(image_path: str, scene_id: int, duration_sec: int) -> dict:
+def _generate_dry_run(image_path: str, scene_id: int, duration_sec: int,
+                      run_id: str = None) -> dict:
     """Делает видео из статичной картинки нужной длины через FFmpeg (без оживления)."""
-    output_path = config.CLIPS_DIR / f"clip_{scene_id}_dryrun.mp4"
+    run_id = run_id or uuid.uuid4().hex[:8]
+    output_path = config.CLIPS_DIR / f"clip_{scene_id}_{run_id}.mp4"
 
     cmd = [
         "ffmpeg", "-y",
@@ -53,11 +66,12 @@ def _generate_dry_run(image_path: str, scene_id: int, duration_sec: int) -> dict
         "-t", str(duration_sec),     # длительность
         "-r", str(config.VIDEO_FPS),
         "-vf", f"scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}",
+        "-c:v", "libx264",           # явный кодек, не полагаемся на дефолт ffmpeg
         "-pix_fmt", "yuv420p",       # совместимость с большинством плееров
         str(output_path)
     ]
 
-    subprocess.run(cmd, capture_output=True, check=True)
+    _run_ffmpeg(cmd)
 
     print(f"   ✅ [DRY RUN] Создана заглушка: {output_path.name}")
 

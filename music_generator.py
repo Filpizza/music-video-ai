@@ -8,17 +8,30 @@ music_generator.py — генерация музыки.
 """
 
 import subprocess
-from pathlib import Path
+import uuid
 
 import config
 
 
-def generate_music(prompt: str, duration_sec: int = 30) -> dict:
+def _run_ffmpeg(cmd: list) -> None:
+    """Запускает FFmpeg и, если он упал, показывает его реальную ошибку.
+
+    Без этого subprocess прячет stderr, и падение выглядит как безликое
+    'команда вернула код 1' — непонятно, что именно пошло не так.
+    """
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        error_text = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"FFmpeg завершился с ошибкой:\n{error_text}")
+
+
+def generate_music(prompt: str, duration_sec: int = 30, run_id: str = None) -> dict:
     """
     Главная функция. Генерирует музыку по текстовому промпту.
 
     prompt       — описание желаемой музыки (жанр, настроение и т.д.)
     duration_sec — желаемая длина трека в секундах
+    run_id       — id запуска для уникального имени файла (если None — сгенерируется)
 
     Возвращает словарь:
       {
@@ -33,7 +46,7 @@ def generate_music(prompt: str, duration_sec: int = 30) -> dict:
     print(f"   Длительность: {duration_sec} сек")
 
     if config.MODE == "dry_run":
-        return _generate_dry_run(prompt, duration_sec)
+        return _generate_dry_run(prompt, duration_sec, run_id)
     else:
         return _generate_production(prompt, duration_sec)
 
@@ -41,9 +54,10 @@ def generate_music(prompt: str, duration_sec: int = 30) -> dict:
 # ─────────────────────────────────────────────────────────────
 #  DRY RUN — заглушка (бесплатно)
 # ─────────────────────────────────────────────────────────────
-def _generate_dry_run(prompt: str, duration_sec: int) -> dict:
+def _generate_dry_run(prompt: str, duration_sec: int, run_id: str = None) -> dict:
     """Создаёт тихий MP3 нужной длины через FFmpeg."""
-    output_path = config.MUSIC_DIR / "track_dryrun.mp3"
+    run_id = run_id or uuid.uuid4().hex[:8]
+    output_path = config.MUSIC_DIR / f"track_{run_id}.mp3"
 
     # FFmpeg генерирует тишину заданной длины
     cmd = [
@@ -55,7 +69,7 @@ def _generate_dry_run(prompt: str, duration_sec: int) -> dict:
         str(output_path)
     ]
 
-    subprocess.run(cmd, capture_output=True, check=True)
+    _run_ffmpeg(cmd)
 
     print(f"   ✅ [DRY RUN] Создана заглушка: {output_path.name}")
 

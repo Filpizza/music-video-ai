@@ -15,6 +15,7 @@ create_music_video() — удобная обёртка над обоими ша�
 """
 
 import re
+import uuid
 
 import brain
 import music_generator
@@ -36,6 +37,7 @@ def create_preview(user_prompt: str, num_scenes: int = 3,
 
     Возвращает словарь:
       {
+        "run_id": уникальный id этого запуска (чтобы файлы не перезаписывались),
         "user_prompt": исходная идея,
         "num_scenes": число сцен,
         "music": бриф из brain.improve_prompt(),
@@ -48,11 +50,16 @@ def create_preview(user_prompt: str, num_scenes: int = 3,
     """
     duration_sec = num_scenes * config.CLIP_DURATION
 
+    # Уникальный id запуска — чтобы два одновременных запуска не затирали
+    # файлы-заглушки друг друга (у каждого будут свои track_/scene_/clip_ файлы).
+    run_id = uuid.uuid4().hex[:8]
+
     music = brain.improve_prompt(user_prompt, mood_hint=mood_hint, bpm_hint=bpm_hint)
-    audio = music_generator.generate_music(music["suno_prompt"], duration_sec)
+    audio = music_generator.generate_music(music["suno_prompt"], duration_sec, run_id=run_id)
     plan = brain.plan_scenes(music, audio["lyrics"], num_scenes, palette_hint=palette_hint)
 
     return {
+        "run_id": run_id,
         "user_prompt": user_prompt,
         "num_scenes": num_scenes,
         "music": music,
@@ -83,6 +90,9 @@ def generate_from_preview(preview: dict, on_progress=None) -> dict:
         if on_progress:
             on_progress(step, percent)
 
+    # run_id прокидываем в имена файлов сцен, чтобы клипы разных запусков
+    # не перезаписывали друг друга. Старые превью без него — тоже переживут.
+    run_id = preview.get("run_id") or uuid.uuid4().hex[:8]
     scenes = preview["scenes"]
     total_scenes = len(scenes)
     clip_paths = []
@@ -92,10 +102,10 @@ def generate_from_preview(preview: dict, on_progress=None) -> dict:
         scene_percent = 10 + int(70 * i / total_scenes)
 
         notify(f"Сцена {scene['id']}/{total_scenes}: картинка", scene_percent)
-        image = image_generator.generate_image(scene["video_prompt"], scene["id"])
+        image = image_generator.generate_image(scene["video_prompt"], scene["id"], run_id=run_id)
 
         notify(f"Сцена {scene['id']}/{total_scenes}: видео", scene_percent)
-        video = video_generator.generate_video(image["image_path"], scene["id"])
+        video = video_generator.generate_video(image["image_path"], scene["id"], run_id=run_id)
 
         notify(f"Сцена {scene['id']}/{total_scenes}: проверка качества", scene_percent)
         quality = quality_checker.check_quality(video["video_path"], scene["id"])
@@ -105,8 +115,8 @@ def generate_from_preview(preview: dict, on_progress=None) -> dict:
 
     print("\n[2/2] Склейка финального ролика")
     notify("Склейка финального ролика", 90)
-    output_name = f"{_slugify(preview['title'])}.mp4"
-    final = assembler.assemble_video(clip_paths, preview["audio_path"], output_name)
+    output_name = f"{_slugify(preview['title'])}_{run_id}.mp4"
+    final = assembler.assemble_video(clip_paths, preview["audio_path"], output_name, run_id=run_id)
 
     print(f"\nГОТОВО: {final['output_path']}")
     notify("Готово", 100)

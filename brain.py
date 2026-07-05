@@ -33,10 +33,12 @@ _MAX_RETRIES = 3
 
 
 def _call_gemini(prompt_text: str, temperature: float = 0.7, max_output_tokens: int = 4096) -> str:
-    """Низкоуровневый вызов Gemini API. Возвращает текст ответа.
+    """Один запрос к Gemini API. Возвращает текст ответа или бросает исключение.
 
-    При временных ошибках (429/503) повторяет запрос с нарастающей паузой,
-    так как бесплатный тариф Gemini иногда перегружен или ограничивает частоту.
+    Повторы (и временные ошибки сети 429/503, и обрезанный JSON) делает
+    вызывающий _call_gemini_json — раньше повторы были и здесь, и там, из-за
+    чего в худшем случае один вызов превращался в _MAX_RETRIES × _MAX_RETRIES
+    обращений к API. Теперь место повторов ровно одно.
 
     thinkingBudget=0 отключает "размышления" модели — gemini-2.5-flash тратит
     на них часть maxOutputTokens ещё до основного ответа, из-за чего ответ
@@ -51,21 +53,14 @@ def _call_gemini(prompt_text: str, temperature: float = 0.7, max_output_tokens: 
         },
     }
 
-    for attempt in range(1, _MAX_RETRIES + 1):
-        resp = httpx.post(
-            f"{GEMINI_URL}?key={config.GEMINI_API_KEY}",
-            json=payload,
-            timeout=60,
-        )
-        if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
-            wait_sec = 5 * attempt
-            print(f"   ⏳ Gemini временно недоступен ({resp.status_code}), "
-                  f"повтор через {wait_sec} сек...")
-            time.sleep(wait_sec)
-            continue
-        resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+    resp = httpx.post(
+        f"{GEMINI_URL}?key={config.GEMINI_API_KEY}",
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def _parse_json(raw: str) -> dict:
@@ -88,15 +83,33 @@ def _parse_json(raw: str) -> dict:
 
 
 def _call_gemini_json(instruction: str, temperature: float, max_output_tokens: int) -> dict:
-    """Вызывает Gemini и парсит JSON-ответ, повторяя запрос, если JSON пришёл битым/обрезанным."""
+    """Вызывает Gemini и парсит JSON-ответ.
+
+    Единый цикл повторов на оба случая: временная ошибка сети (429/503) —
+    ждём и пробуем снова; JSON пришёл битым/обрезанным — перегенерируем ответ.
+    Ровно один сетевой запрос на попытку (без вложенных повторов).
+    """
     for attempt in range(1, _MAX_RETRIES + 1):
-        raw = _call_gemini(instruction, temperature=temperature, max_output_tokens=max_output_tokens)
+        try:
+            raw = _call_gemini(instruction, temperature=temperature, max_output_tokens=max_output_tokens)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in _RETRYABLE_STATUS_CODES and attempt < _MAX_RETRIES:
+                wait_sec = 5 * attempt
+                print(f"   ⏳ Gemini временно недоступен ({exc.response.status_code}), "
+                      f"повтор через {wait_sec} сек...")
+                time.sleep(wait_sec)
+                continue
+            raise
+
         try:
             return _parse_json(raw)
         except json.JSONDecodeError:
             if attempt == _MAX_RETRIES:
                 raise
             print(f"   ⏳ Ответ Gemini обрезан/некорректен, повтор попытки {attempt + 1}...")
+
+    # Сюда попадаем только если все попытки ушли на паузы из-за 429/503
+    raise RuntimeError("Gemini не ответил после всех попыток (перегрузка/лимит запросов)")
 
 
 # ─────────────────────────────────────────────────────────────
