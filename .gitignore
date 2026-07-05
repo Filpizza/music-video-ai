@@ -6,6 +6,9 @@ venv/
 __pycache__/
 *.pyc
 
+# Служебный кэш pytest
+.pytest_cache/
+
 # Рабочие и выходные файлы (тяжёлые, не нужны в репозитории)
 work/
 output/
