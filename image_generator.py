@@ -1,19 +1,28 @@
 """
 image_generator.py — генерация изображений для сцен.
 
-В режиме dry_run: создаёт цветную placeholder-картинку нужного размера (заглушка, бесплатно).
-В режиме production: вызовет Flux через fal.ai (подключим позже).
+Провайдер выбирается настройкой config.IMAGE_PROVIDER (ОТДЕЛЬНО от config.MODE),
+чтобы можно было включить реальные картинки, оставив музыку и видео на заглушках:
+  "stub"   — цветная placeholder-картинка через Pillow (бесплатно, по умолчанию);
+  "google" — реальная генерация через Gemini API / Imagen (ТРАТИТ ДЕНЬГИ);
+  "fal"    — Flux через fal.ai (пока не реализовано).
 
 Возвращает путь к сгенерированному изображению.
 """
 
+import base64
 import hashlib
 import textwrap
 import uuid
 
+import httpx
 from PIL import Image, ImageDraw, ImageFont
 
 import config
+
+# Сколько реальных (платных) картинок уже создано за жизнь процесса.
+# Служит предохранителем против случайных больших трат (см. MAX_IMAGES_PER_RUN).
+_paid_images_generated = 0
 
 
 def generate_image(image_prompt: str, scene_id: int = 1, run_id: str = None) -> dict:
@@ -34,10 +43,14 @@ def generate_image(image_prompt: str, scene_id: int = 1, run_id: str = None) -> 
     print(f"   Сцена: {scene_id}")
     print(f"   Промпт: {image_prompt}")
 
-    if config.MODE == "dry_run":
-        return _generate_dry_run(image_prompt, scene_id, run_id)
-    else:
+    provider = config.IMAGE_PROVIDER
+    if provider == "google":
+        return _generate_google(image_prompt, scene_id, run_id)
+    elif provider == "fal":
         return _generate_production(image_prompt, scene_id)
+    else:
+        # "stub" и любое незнакомое значение -> безопасная бесплатная заглушка
+        return _generate_dry_run(image_prompt, scene_id, run_id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -108,6 +121,96 @@ def _color_from_text(text: str) -> tuple:
     """Превращает текст промпта в стабильный RGB-цвет (для наглядности в dry_run)."""
     digest = hashlib.md5(text.encode("utf-8")).hexdigest()
     return tuple(int(digest[i:i + 2], 16) for i in (0, 2, 4))
+
+
+# ─────────────────────────────────────────────────────────────
+#  GOOGLE — реальная генерация через Gemini API / Imagen (ПЛАТНО)
+# ─────────────────────────────────────────────────────────────
+def _generate_google(image_prompt: str, scene_id: int, run_id: str = None) -> dict:
+    """Генерирует настоящую картинку через Imagen (Gemini API) по тому же ключу.
+
+    Тратит деньги (~$0.02 за Imagen 4 Fast). Защищён лимитом
+    config.MAX_IMAGES_PER_RUN и подробной обработкой ошибок — при любой
+    проблеме бросает понятное исключение, а не роняет весь pipeline безлико.
+    """
+    global _paid_images_generated
+
+    # --- Предохранитель от случайных больших трат ---
+    if _paid_images_generated >= config.MAX_IMAGES_PER_RUN:
+        raise RuntimeError(
+            f"Достигнут лимит картинок MAX_IMAGES_PER_RUN={config.MAX_IMAGES_PER_RUN}. "
+            f"Остановился, чтобы не потратить лишнего. Если это осознанно — подними "
+            f"лимит в config.py или переменной окружения MAX_IMAGES_PER_RUN."
+        )
+
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("Нет GEMINI_API_KEY в .env — реальная генерация невозможна.")
+
+    run_id = run_id or uuid.uuid4().hex[:8]
+    model = config.IMAGE_MODEL
+    price = config.IMAGE_PRICE_USD.get(model, 0.04)
+    print(f"   💸 [GOOGLE] Модель {model} — платно, ~${price:.3f} за картинку")
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{model}:predict?key={config.GEMINI_API_KEY}"
+    )
+    payload = {
+        "instances": [{"prompt": image_prompt}],
+        "parameters": {
+            "sampleCount": 1,
+            "aspectRatio": "16:9",  # под наш формат 1920x1080
+        },
+    }
+
+    # 1) Сетевой запрос — ловим таймауты и обрывы сети
+    try:
+        resp = httpx.post(url, json=payload, timeout=120)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Ошибка сети при запросе картинки к Google: {exc}") from exc
+
+    # 2) HTTP-статус — показываем читаемую причину, а не голый код
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Google вернул ошибку {resp.status_code} при генерации картинки:\n"
+            f"{resp.text[:600]}"
+        )
+
+    # 3) Разбор ответа — картинка могла быть отклонена фильтром безопасности
+    data = resp.json()
+    predictions = data.get("predictions") or []
+    if not predictions:
+        raise RuntimeError(
+            "Google не вернул картинку (пустой список predictions). Возможно, промпт "
+            f"отклонён фильтром безопасности. Ответ: {str(data)[:600]}"
+        )
+
+    b64 = predictions[0].get("bytesBase64Encoded")
+    if not b64:
+        raise RuntimeError(
+            f"В ответе Google нет данных картинки: {str(predictions[0])[:400]}"
+        )
+
+    # 4) Сохраняем картинку на диск
+    image_bytes = base64.b64decode(b64)
+    output_path = config.IMAGES_DIR / f"scene_{scene_id}_{run_id}_google.png"
+    with open(output_path, "wb") as f:
+        f.write(image_bytes)
+
+    _paid_images_generated += 1
+    print(
+        f"   ✅ [GOOGLE] Сохранено: {output_path.name} ({len(image_bytes) // 1024} КБ). "
+        f"Потрачено ~${price:.3f}. За этот процесс: "
+        f"{_paid_images_generated}/{config.MAX_IMAGES_PER_RUN}"
+    )
+
+    return {
+        "image_path": str(output_path),
+        "prompt": image_prompt,
+        "provider": "google",
+        "model": model,
+        "cost_usd": price,
+    }
 
 
 # ─────────────────────────────────────────────────────────────

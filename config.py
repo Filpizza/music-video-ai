@@ -46,6 +46,29 @@ CLIP_DURATION    = 8                       # секунд на один клип
 # False = сначала показать промпты (музыка + сцены), запуск — только после подтверждения
 AUTO_MODE = os.getenv("AUTO_MODE", "false").strip().lower() == "true"
 
+# ── Провайдер генерации картинок ──────────────────────────────
+# Выбирается ОТДЕЛЬНО от MODE — чтобы можно было включить реальные картинки,
+# оставив музыку и видео на бесплатных заглушках (dry_run).
+#   "stub"   = заглушка через Pillow (БЕСПЛАТНО, по умолчанию)
+#   "google" = реальная генерация через Gemini API / Imagen (ТРАТИТ ДЕНЬГИ)
+#   "fal"    = Flux через fal.ai (пока не реализовано)
+IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "stub").strip().lower()
+
+# Модель Google для картинок. Самая дешёвая — Imagen 4 Fast (~$0.02/шт).
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "imagen-4.0-fast-generate-001").strip()
+
+# Ориентировочная цена в USD за одну картинку (для отчёта о тратах).
+IMAGE_PRICE_USD = {
+    "imagen-4.0-fast-generate-001": 0.02,
+    "imagen-4.0-generate-001": 0.04,
+    "imagen-4.0-ultra-generate-001": 0.06,
+}
+
+# ── ЗАЩИТА ОТ СЛУЧАЙНЫХ ТРАТ ───────────────────────────────────
+# Максимум реальных (платных) картинок за один запуск. Если сцен больше —
+# код остановится с ошибкой, а не сгенерирует случайно сотни штук.
+MAX_IMAGES_PER_RUN = int(os.getenv("MAX_IMAGES_PER_RUN", "3"))
+
 # ── Проверка при запуске ──────────────────────────────────────
 def check_config():
     """Показывает текущие настройки при старте."""
@@ -61,6 +84,15 @@ def check_config():
             print(f"  ❌ Не хватает ключей: {', '.join(missing)}")
     else:
         print("  ✅ DRY RUN — заглушки, деньги не тратятся")
+
+    # Картинки выбираются отдельно от MODE — предупреждаем, если включён платный провайдер
+    if IMAGE_PROVIDER == "stub":
+        print("  🖼️  Картинки: STUB (заглушка, бесплатно)")
+    else:
+        price = IMAGE_PRICE_USD.get(IMAGE_MODEL, 0.04)
+        print(f"  🖼️  Картинки: {IMAGE_PROVIDER.upper()} / {IMAGE_MODEL} "
+              f"— ⚠️ ПЛАТНО, ~${price:.3f}/шт, лимит {MAX_IMAGES_PER_RUN} за запуск")
+
     print(f"  Папка результатов: {OUTPUT_DIR}")
 
 
