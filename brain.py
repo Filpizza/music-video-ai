@@ -261,7 +261,11 @@ def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5,
         f"sentences describing tones/colors/lighting style) that will be shared "
         f"across every scene for visual consistency.\n\n"
         f"Then create a plan of {num_scenes} scenes that tell a visual story while "
-        f"ALL keeping the same fixed style/subject above. For each scene write:\n"
+        f"ALL keeping the same fixed style/subject above. VARY the camera framing "
+        f"and composition from scene to scene (wide establishing shot, medium shot, "
+        f"close-up portrait, over-the-shoulder, environment detail...) — the fixed "
+        f"style says WHO/WHAT and the look, each scene chooses its own framing and "
+        f"action so the video does not repeat the same shot. For each scene write:\n"
         "- description: short human-readable summary of what happens\n"
         "- image_prompt: a detailed, cinematic English prompt describing WHAT IS IN "
         "THE FRAME (subject, setting, composition, lighting) for an AI image "
@@ -322,6 +326,12 @@ def draft_style(user_prompt: str) -> str:
         "overall look) that will be appended to EVERY shot to keep the whole series "
         "consistent — for example: \"lone cyborg developer, chrome-plated armor, "
         "neon-lit lab, cinematic 4k, moody volumetric lighting\".\n\n"
+        "IMPORTANT: the style must describe only WHO/WHAT and the overall look "
+        "(character, environment family, lighting/color mood, rendering quality). "
+        "Do NOT include shot composition, camera framing (\"medium shot\", "
+        "\"close-up\"), camera movement, or specific actions (\"typing\") — each "
+        "scene decides its own framing and action, otherwise every shot in the "
+        "video would look identical.\n\n"
         f'User\'s idea: "{user_prompt}"\n\n'
         'Reply with ONLY valid JSON: {"style": "..."}'
     )

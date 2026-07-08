@@ -51,8 +51,11 @@ def check_image(image_path: str, image_prompt: str, negative_tags: list = None) 
     negative_line = ""
     if negative_tags:
         negative_line = (
-            "\nAdditionally, these must NOT appear in the image: "
+            "\nAdditionally, these should NOT appear in the image: "
             + ", ".join(str(t) for t in negative_tags)
+            + ". For THIS list fail only if the forbidden element is prominent "
+            "and clearly noticeable — a faint hint in a blurred background is "
+            "acceptable (regeneration costs money)."
         )
 
     instruction = (
