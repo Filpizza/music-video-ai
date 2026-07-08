@@ -16,6 +16,7 @@ web_app.py — веб-интерфейс для запуска pipeline без �
 Потом открыть в браузере: http://127.0.0.1:8000
 """
 
+import copy
 import threading
 import traceback
 import uuid
@@ -47,10 +48,22 @@ class PromptRequest(BaseModel):
     mood_hint: str = ""
     bpm_hint: str = ""
     palette_hint: str = ""
+    style_hint: str = ""
+
+
+class SceneEdit(BaseModel):
+    id: int
+    image_prompt: str = ""
+    motion_prompt: str = ""
 
 
 class ConfirmRequest(BaseModel):
+    """Подтверждение генерации с правками пользователя поверх черновика."""
     preview_id: str
+    music_prompt: str = ""
+    style: str = ""
+    color_palette: str = ""
+    scenes: list[SceneEdit] = []
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -66,6 +79,10 @@ def get_config():
         "clip_duration": config.CLIP_DURATION,
         "duration_options": DURATION_OPTIONS,
         "auto_mode_default": config.AUTO_MODE,
+        "image_provider": config.IMAGE_PROVIDER,
+        "image_model": config.IMAGE_MODEL,
+        "image_price_usd": config.IMAGE_PRICE_USD.get(config.IMAGE_MODEL, 0.0),
+        "max_images_per_run": config.MAX_IMAGES_PER_RUN,
     }
 
 
@@ -88,6 +105,7 @@ def create_preview_endpoint(req: PromptRequest):
             mood_hint=req.mood_hint.strip(),
             bpm_hint=req.bpm_hint.strip(),
             palette_hint=req.palette_hint.strip(),
+            style_hint=req.style_hint.strip(),
         )
     except Exception as exc:
         raise HTTPException(500, str(exc))
@@ -105,7 +123,25 @@ def confirm_generate(req: ConfirmRequest):
     with preview_lock:
         if current_preview.get("id") != req.preview_id:
             raise HTTPException(409, "Промпты устарели — сгенерируй предпросмотр заново")
-        preview_data = current_preview["data"]
+        # Копия черновика — вливаем в неё правки пользователя, не трогая оригинал
+        preview_data = copy.deepcopy(current_preview["data"])
+
+    # Правки поверх черновика (пустые поля не затирают исходный текст)
+    if req.style.strip():
+        preview_data["style"] = req.style.strip()
+    if req.music_prompt.strip():
+        preview_data["music_prompt"] = req.music_prompt.strip()
+    if req.color_palette.strip():
+        preview_data["color_palette"] = req.color_palette.strip()
+    if req.scenes:
+        edits_by_id = {s.id: s for s in req.scenes}
+        for scene in preview_data["scenes"]:
+            edit = edits_by_id.get(scene["id"])
+            if not edit:
+                continue
+            if edit.image_prompt.strip():
+                scene["image_prompt"] = edit.image_prompt.strip()
+            scene["motion_prompt"] = edit.motion_prompt.strip()
 
     with job_lock:
         if job.get("status") == "running":
@@ -158,14 +194,16 @@ def generate_auto(req: PromptRequest):
     thread = threading.Thread(
         target=_run_auto,
         args=(req.prompt.strip(), req.num_scenes,
-              req.mood_hint.strip(), req.bpm_hint.strip(), req.palette_hint.strip()),
+              req.mood_hint.strip(), req.bpm_hint.strip(), req.palette_hint.strip(),
+              req.style_hint.strip()),
         daemon=True,
     )
     thread.start()
     return {"started": True}
 
 
-def _run_auto(prompt: str, num_scenes: int, mood_hint: str, bpm_hint: str, palette_hint: str):
+def _run_auto(prompt: str, num_scenes: int, mood_hint: str, bpm_hint: str,
+              palette_hint: str, style_hint: str):
     def on_progress(step: str, percent: int):
         with job_lock:
             job["step"] = step
@@ -174,7 +212,7 @@ def _run_auto(prompt: str, num_scenes: int, mood_hint: str, bpm_hint: str, palet
     try:
         result = main.create_music_video(
             prompt, num_scenes, mood_hint=mood_hint, bpm_hint=bpm_hint,
-            palette_hint=palette_hint, on_progress=on_progress,
+            palette_hint=palette_hint, style_hint=style_hint, on_progress=on_progress,
         )
         with job_lock:
             job["status"] = "done"

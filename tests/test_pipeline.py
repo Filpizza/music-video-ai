@@ -23,7 +23,8 @@ def _make_fake_preview(num_scenes=2, run_id="pipetest"):
         {
             "id": i + 1,
             "description": f"тестовая сцена {i + 1}",
-            "video_prompt": f"cinematic test scene {i + 1}, high detail",
+            "image_prompt": f"cinematic test scene {i + 1}, high detail",
+            "motion_prompt": "slow drift",
             "mood": "test",
             "negative_tags": [],
         }
@@ -35,6 +36,8 @@ def _make_fake_preview(num_scenes=2, run_id="pipetest"):
         "user_prompt": "test",
         "num_scenes": num_scenes,
         "music": {},
+        "music_prompt": "test music prompt",
+        "style": "",
         "audio_path": audio["audio_path"],
         "lyrics": "la la la",
         "title": "Test Track",
@@ -55,6 +58,37 @@ def test_full_dry_run_pipeline_produces_mp4(monkeypatch):
     assert os.path.exists(result["output_path"])
     assert os.path.getsize(result["output_path"]) > 0
     assert result["title"] == "Test Track"
+
+
+def test_style_is_appended_to_every_image_prompt(monkeypatch):
+    """Закреплённый стиль дописывается в промпт КАЖДОГО кадра.
+
+    Подменяем генераторы заглушками, чтобы проверить именно текст промпта,
+    не создавая реальных файлов и не гоняя FFmpeg.
+    """
+    captured_prompts = []
+
+    def fake_generate_image(image_prompt, scene_id=1, run_id=None):
+        captured_prompts.append(image_prompt)
+        return {"image_path": "dummy.png", "prompt": image_prompt}
+
+    monkeypatch.setattr(main.image_generator, "generate_image", fake_generate_image)
+    monkeypatch.setattr(main.video_generator, "generate_video",
+                        lambda *a, **k: {"video_path": "dummy.mp4", "duration": 1})
+    monkeypatch.setattr(main.assembler, "assemble_video",
+                        lambda *a, **k: {"output_path": "dummy_out.mp4"})
+
+    preview = _make_fake_preview(num_scenes=2, run_id="styletest")
+    preview["style"] = "CYBORG_DNA_TOKEN"
+    for scene in preview["scenes"]:
+        scene["image_prompt"] = "a lab desk"
+
+    main.generate_from_preview(preview)
+
+    assert len(captured_prompts) == 2
+    for prompt in captured_prompts:
+        assert "a lab desk" in prompt          # текст сцены сохранён
+        assert "CYBORG_DNA_TOKEN" in prompt     # стиль принудительно добавлен
 
 
 def test_progress_callback_reaches_100(monkeypatch):

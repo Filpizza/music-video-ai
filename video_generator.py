@@ -22,14 +22,16 @@ def _run_ffmpeg(cmd: list) -> None:
 
 
 def generate_video(image_path: str, scene_id: int = 1, duration_sec: int = None,
-                   run_id: str = None) -> dict:
+                   run_id: str = None, motion_prompt: str = "") -> dict:
     """
     Главная функция. Превращает картинку в видеоклип.
 
-    image_path   — путь к исходной картинке сцены
-    scene_id     — номер сцены (используется в имени файла)
-    duration_sec — длина клипа в секундах (по умолчанию — config.CLIP_DURATION)
-    run_id       — id запуска для уникального имени файла (если None — сгенерируется)
+    image_path    — путь к исходной картинке сцены
+    scene_id      — номер сцены (используется в имени файла)
+    duration_sec  — длина клипа в секундах (по умолчанию — config.CLIP_DURATION)
+    run_id        — id запуска для уникального имени файла (если None — сгенерируется)
+    motion_prompt — описание движения камеры/субъекта. В dry_run НЕ влияет на результат
+                    (просто логируется) — реально заработает, когда подключим Veo.
 
     Возвращает словарь:
       {
@@ -43,6 +45,8 @@ def generate_video(image_path: str, scene_id: int = 1, duration_sec: int = None,
     print(f"   Сцена: {scene_id}")
     print(f"   Картинка: {image_path}")
     print(f"   Длительность: {duration_sec} сек")
+    if motion_prompt:
+        print(f"   Движение (для Veo): {motion_prompt}")
 
     if config.MODE == "dry_run":
         return _generate_dry_run(image_path, scene_id, duration_sec, run_id)

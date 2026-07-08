@@ -27,25 +27,31 @@ import config
 
 
 def create_preview(user_prompt: str, num_scenes: int = 3,
-                    mood_hint: str = "", bpm_hint: str = "", palette_hint: str = "") -> dict:
+                    mood_hint: str = "", bpm_hint: str = "", palette_hint: str = "",
+                    style_hint: str = "") -> dict:
     """
-    Шаг 1: промпт-инжиниринг без рендера видео.
+    Шаг 1: промпт-инжиниринг без рендера видео (ЧЕРНОВИК для правки пользователем).
 
-    Вызывает Gemini дважды (музыкальный бриф + план сцен) и создаёт dry_run
+    Вызывает Gemini (музыкальный бриф + стиль + план сцен) и создаёт dry_run
     заглушку аудио (бесплатно и локально через FFmpeg — нужна как источник
-    текста песни для планирования сцен).
+    текста песни для планирования сцен). Все промпты пользователь потом правит.
 
-    Возвращает словарь:
+    style_hint — если пользователь сам задал стиль/героя, берём его как есть;
+                 если пусто — Gemini предлагает черновой стиль (brain.draft_style).
+
+    Возвращает словарь (все текстовые поля — редактируемые):
       {
-        "run_id": уникальный id этого запуска (чтобы файлы не перезаписывались),
+        "run_id": уникальный id этого запуска,
         "user_prompt": исходная идея,
         "num_scenes": число сцен,
         "music": бриф из brain.improve_prompt(),
+        "music_prompt": редактируемый промпт музыки (suno_prompt),
+        "style": закреплённая «визуальная ДНК» (дописывается в каждый кадр),
         "audio_path": путь к аудио-заглушке,
         "lyrics": текст песни,
         "title": название трека,
         "color_palette": единая цветовая гамма ролика,
-        "scenes": список сцен с их video_prompt,
+        "scenes": список сцен с image_prompt / motion_prompt,
       }
     """
     duration_sec = num_scenes * config.CLIP_DURATION
@@ -56,13 +62,20 @@ def create_preview(user_prompt: str, num_scenes: int = 3,
 
     music = brain.improve_prompt(user_prompt, mood_hint=mood_hint, bpm_hint=bpm_hint)
     audio = music_generator.generate_music(music["suno_prompt"], duration_sec, run_id=run_id)
-    plan = brain.plan_scenes(music, audio["lyrics"], num_scenes, palette_hint=palette_hint)
+
+    # Стиль: либо задан пользователем, либо Gemini предлагает черновик
+    style = style_hint.strip() or brain.draft_style(user_prompt)
+
+    plan = brain.plan_scenes(music, audio["lyrics"], num_scenes,
+                             style=style, palette_hint=palette_hint)
 
     return {
         "run_id": run_id,
         "user_prompt": user_prompt,
         "num_scenes": num_scenes,
         "music": music,
+        "music_prompt": music["suno_prompt"],
+        "style": style,
         "audio_path": audio["audio_path"],
         "lyrics": audio["lyrics"],
         "title": audio["title"],
@@ -95,17 +108,42 @@ def generate_from_preview(preview: dict, on_progress=None) -> dict:
     run_id = preview.get("run_id") or uuid.uuid4().hex[:8]
     scenes = preview["scenes"]
     total_scenes = len(scenes)
+
+    # Считаем лимит платных картинок поштучно за ЭТОТ запуск.
+    image_generator.reset_paid_counter()
+
+    # Если картинки платные — проверяем лимит ЗАРАНЕЕ и падаем до генерации
+    # (не потратив ни цента), а не на середине запуска.
+    if config.IMAGE_PROVIDER != "stub" and total_scenes > config.MAX_IMAGES_PER_RUN:
+        raise RuntimeError(
+            f"Сцен {total_scenes}, а лимит платных картинок "
+            f"MAX_IMAGES_PER_RUN={config.MAX_IMAGES_PER_RUN}. Уменьши число сцен "
+            f"или подними лимит в config.py — остановился, чтобы не потратить лишнего."
+        )
+
+    # Закреплённый стиль/герой ролика — принудительно дописываем в каждый кадр,
+    # чтобы визуал не «уплывал» между сценами (даже если пользователь правил сцены).
+    style = (preview.get("style") or "").strip()
+
     clip_paths = []
 
     print(f"\n[1/2] Генерация {total_scenes} клипов")
     for i, scene in enumerate(scenes):
         scene_percent = 10 + int(70 * i / total_scenes)
 
+        # Итоговый промпт картинки = что в кадре + закреплённый стиль
+        image_prompt = scene["image_prompt"]
+        if style:
+            image_prompt = f"{image_prompt}, {style}"
+
         notify(f"Сцена {scene['id']}/{total_scenes}: картинка", scene_percent)
-        image = image_generator.generate_image(scene["video_prompt"], scene["id"], run_id=run_id)
+        image = image_generator.generate_image(image_prompt, scene["id"], run_id=run_id)
 
         notify(f"Сцена {scene['id']}/{total_scenes}: видео", scene_percent)
-        video = video_generator.generate_video(image["image_path"], scene["id"], run_id=run_id)
+        video = video_generator.generate_video(
+            image["image_path"], scene["id"], run_id=run_id,
+            motion_prompt=scene.get("motion_prompt", ""),
+        )
 
         notify(f"Сцена {scene['id']}/{total_scenes}: проверка качества", scene_percent)
         quality = quality_checker.check_quality(video["video_path"], scene["id"])
@@ -131,7 +169,7 @@ def generate_from_preview(preview: dict, on_progress=None) -> dict:
 
 def create_music_video(user_prompt: str, num_scenes: int = 3,
                         mood_hint: str = "", bpm_hint: str = "", palette_hint: str = "",
-                        on_progress=None) -> dict:
+                        style_hint: str = "", on_progress=None) -> dict:
     """Удобная обёртка: весь pipeline сразу, без ручного предпросмотра (режим "автомат")."""
     def notify(step: str, percent: int):
         if on_progress:
@@ -142,7 +180,8 @@ def create_music_video(user_prompt: str, num_scenes: int = 3,
     print("=" * 60)
 
     notify("Улучшение промпта и планирование сцен", 5)
-    preview = create_preview(user_prompt, num_scenes, mood_hint, bpm_hint, palette_hint)
+    preview = create_preview(user_prompt, num_scenes, mood_hint, bpm_hint,
+                             palette_hint, style_hint=style_hint)
 
     return generate_from_preview(preview, on_progress=on_progress)
 

@@ -38,7 +38,8 @@ def test_plan_scenes_stub_returns_requested_number(monkeypatch):
     assert len(plan["scenes"]) == 4
     for scene in plan["scenes"]:
         assert "id" in scene
-        assert "video_prompt" in scene
+        assert "image_prompt" in scene
+        assert "motion_prompt" in scene
 
 
 def test_parse_json_strips_code_fences():

@@ -201,13 +201,18 @@ def _stub_music_brief(user_prompt: str, mood_hint: str, bpm_hint: str) -> dict:
 # ─────────────────────────────────────────────────────────────
 #  2. Планирование сцен под музыку
 # ─────────────────────────────────────────────────────────────
-def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5, palette_hint: str = "") -> dict:
+def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5,
+                style: str = "", palette_hint: str = "") -> dict:
     """
     Строит план визуальных сцен, подобранный под конкретную музыку из improve_prompt().
+
+    Это ЧЕРНОВИК — пользователь потом правит его в интерфейсе перед генерацией.
 
     music         — словарь из improve_prompt() (жанр, настроение, инструменты и т.д.)
     lyrics        — текст песни/тема (контекст для сюжета)
     num_scenes    — сколько сцен построить
+    style         — закреплённая «визуальная ДНК» (герой/образ), которую нужно держать
+                    во всех сценах ради единого стиля серии
     palette_hint  — необязательная подсказка по цветовой гамме (если пусто — решает Gemini)
 
     Возвращает словарь:
@@ -217,7 +222,8 @@ def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5, palette_hint: str
           {
             "id": номер сцены,
             "description": короткое описание того, что происходит,
-            "video_prompt": детальный промпт на английском для Veo/Kling,
+            "image_prompt": промпт того, ЧТО В КАДРЕ (для генератора картинок),
+            "motion_prompt": промпт ДВИЖЕНИЯ камеры/субъекта (для Veo),
             "mood": настроение конкретной сцены,
             "negative_tags": [чего в кадре быть не должно],
           },
@@ -228,12 +234,16 @@ def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5, palette_hint: str
     print(f"\n🎬 Планирую {num_scenes} сцен под жанр {music.get('genre')}...")
 
     if not config.GEMINI_API_KEY:
-        result = _stub_scene_plan(music, num_scenes, palette_hint)
+        result = _stub_scene_plan(music, num_scenes, style, palette_hint)
         print(f"   ⚠️  [Заглушка, нет ключа] Создано {num_scenes} сцен")
         return result
 
     instruments = ", ".join(music.get("key_instruments", []))
     palette_line = f"\nRequested color palette: {palette_hint}" if palette_hint else ""
+    style_line = (
+        f"\nFixed visual style/subject that MUST be present and consistent in EVERY "
+        f"scene (do not drift away from it): {style}"
+    ) if style else ""
 
     instruction = (
         "You are an award-winning music video director. You've been given a "
@@ -246,22 +256,24 @@ def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5, palette_hint: str
         f"BPM: {music.get('bpm')}\n"
         f"Instruments: {instruments}\n"
         f"Vocal: {music.get('vocal_type')}\n"
-        f"Lyrics/theme: {lyrics}{palette_line}\n\n"
+        f"Lyrics/theme: {lyrics}{palette_line}{style_line}\n\n"
         f"First, decide ONE consistent color_palette for the whole video (2-4 "
         f"sentences describing tones/colors/lighting style) that will be shared "
         f"across every scene for visual consistency.\n\n"
-        f"Then create a plan of {num_scenes} scenes that tell a visual story. "
-        f"For each scene write:\n"
+        f"Then create a plan of {num_scenes} scenes that tell a visual story while "
+        f"ALL keeping the same fixed style/subject above. For each scene write:\n"
         "- description: short human-readable summary of what happens\n"
-        "- video_prompt: a detailed, cinematic English prompt for an AI video "
-        "generator (Kling/Veo) — include the shared color palette, camera "
-        "framing/movement, subject, setting, lighting, and genre-appropriate "
-        "visual style\n"
+        "- image_prompt: a detailed, cinematic English prompt describing WHAT IS IN "
+        "THE FRAME (subject, setting, composition, lighting) for an AI image "
+        "generator — keep the fixed style/subject and shared color palette\n"
+        "- motion_prompt: a short English description of CAMERA/SUBJECT MOVEMENT for "
+        "an AI video generator (e.g. 'slow push-in, subtle camera drift')\n"
         "- mood: this scene's emotional tone\n"
         "- negative_tags: things that must NOT appear in this shot\n\n"
         "Reply with ONLY valid JSON in this exact shape:\n"
         '{"color_palette": "...", "scenes": [{"id": 1, "description": "...", '
-        '"video_prompt": "...", "mood": "...", "negative_tags": ["...", "..."]}]}'
+        '"image_prompt": "...", "motion_prompt": "...", "mood": "...", '
+        '"negative_tags": ["...", "..."]}]}'
     )
 
     max_tokens = 1024 + 500 * num_scenes  # больше сцен — длиннее JSON-ответ
@@ -271,15 +283,17 @@ def plan_scenes(music: dict, lyrics: str, num_scenes: int = 5, palette_hint: str
     return result
 
 
-def _stub_scene_plan(music: dict, num_scenes: int, palette_hint: str) -> dict:
+def _stub_scene_plan(music: dict, num_scenes: int, style: str, palette_hint: str) -> dict:
     """Заглушка на случай отсутствия GEMINI_API_KEY — просто для теста без ключа."""
     genre = music.get("genre", "Unknown")
     palette = palette_hint or "neutral, balanced tones"
+    style = style or f"{genre} music video, cinematic, high detail"
     scenes = [
         {
             "id": i + 1,
             "description": f"Сцена {i + 1} для жанра {genre}",
-            "video_prompt": f"cinematic scene {i + 1}, {genre} music video, {palette}, high detail",
+            "image_prompt": f"cinematic scene {i + 1}, {style}, {palette}",
+            "motion_prompt": "slow subtle camera drift",
             "mood": music.get("mood", "atmospheric"),
             "negative_tags": [],
         }
@@ -289,20 +303,51 @@ def _stub_scene_plan(music: dict, num_scenes: int, palette_hint: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
+#  Черновик «визуальной ДНК» (стиль/герой ролика)
+# ─────────────────────────────────────────────────────────────
+def draft_style(user_prompt: str) -> str:
+    """Предлагает черновой единый стиль/героя ролика по идее пользователя.
+
+    Возвращает короткую строку-«визуальную ДНК», которую потом принудительно
+    дописываем в каждый кадр ради единого стиля всей серии роликов. Пользователь
+    может её отредактировать в интерфейсе. Если ключа нет — простая заглушка.
+    """
+    if not config.GEMINI_API_KEY:
+        return f"{user_prompt}, cinematic, high detail, consistent style"
+
+    instruction = (
+        "You are an art director for a music-video series that must keep ONE "
+        "consistent visual identity across many videos. From the user's idea, write "
+        "a single concise 'visual DNA' line (the recurring subject/character plus the "
+        "overall look) that will be appended to EVERY shot to keep the whole series "
+        "consistent — for example: \"lone cyborg developer, chrome-plated armor, "
+        "neon-lit lab, cinematic 4k, moody volumetric lighting\".\n\n"
+        f'User\'s idea: "{user_prompt}"\n\n'
+        'Reply with ONLY valid JSON: {"style": "..."}'
+    )
+    result = _call_gemini_json(instruction, temperature=0.7, max_output_tokens=256)
+    return result.get("style", f"{user_prompt}, cinematic, high detail")
+
+
+# ─────────────────────────────────────────────────────────────
 #  Тест: python brain.py
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     config.check_config()
 
     music = improve_prompt("грустная песня о дожде")
+    style = draft_style("грустная песня о дожде")
+    print(f"\nСтиль: {style}")
 
     plan = plan_scenes(
         music=music,
         lyrics="Дождь стучит по крыше, я вспоминаю тебя...",
         num_scenes=3,
+        style=style,
     )
 
     print("\nПлан сцен:")
     for scene in plan.get("scenes", []):
         print(f"  Сцена {scene['id']}: {scene['description']}")
-        print(f"    video_prompt: {scene['video_prompt']}")
+        print(f"    image_prompt:  {scene['image_prompt']}")
+        print(f"    motion_prompt: {scene['motion_prompt']}")
