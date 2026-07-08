@@ -12,6 +12,7 @@ import os
 import config
 import main
 import music_generator
+import quality_checker
 
 
 def _make_fake_preview(num_scenes=2, run_id="pipetest"):
@@ -101,6 +102,56 @@ def test_progress_callback_reaches_100(monkeypatch):
 
     assert percents, "колбэк ни разу не вызвался"
     assert percents[-1] == 100
+
+
+def test_artifact_image_is_regenerated(monkeypatch):
+    """Если Gemini Vision нашёл артефакт — картинка перегенерируется.
+
+    Сценарий: сцена 1 бракуется один раз (две руки с разных сторон),
+    перегенерация проходит; сцена 2 проходит сразу.
+    Итого генераций картинок: 2 сцены + 1 перегенерация = 3.
+    """
+    monkeypatch.setattr(config, "CLIP_DURATION", 1)
+    monkeypatch.setattr(config, "IMAGE_PROVIDER", "google")   # проверка только для платных
+    monkeypatch.setattr(config, "IMAGE_QUALITY_CHECK", True)
+    monkeypatch.setattr(config, "MAX_IMAGE_RETRIES", 2)
+
+    gen_calls = []
+
+    def fake_generate_image(image_prompt, scene_id=1, run_id=None):
+        gen_calls.append(run_id)
+        return {"image_path": f"fake_{len(gen_calls)}.png", "prompt": image_prompt}
+
+    check_results = iter([
+        {"passed": False, "reason": "two hands from different sides"},  # сцена 1, брак
+        {"passed": True, "reason": "ok"},                               # сцена 1, после перегенерации
+        {"passed": True, "reason": "ok"},                               # сцена 2
+    ])
+    check_calls = []
+
+    def fake_check_image(image_path, image_prompt, negative_tags=None):
+        check_calls.append(image_path)
+        return next(check_results)
+
+    monkeypatch.setattr(main.image_generator, "generate_image", fake_generate_image)
+    monkeypatch.setattr(main.quality_checker, "check_image", fake_check_image)
+    monkeypatch.setattr(main.video_generator, "generate_video",
+                        lambda *a, **k: {"video_path": "dummy.mp4", "duration": 1})
+    monkeypatch.setattr(main.assembler, "assemble_video",
+                        lambda *a, **k: {"output_path": "dummy_out.mp4"})
+
+    preview = _make_fake_preview(num_scenes=2, run_id="artifacttest")
+    main.generate_from_preview(preview)
+
+    assert len(gen_calls) == 3, "ожидалось 2 сцены + 1 перегенерация"
+    assert len(check_calls) == 3, "каждая версия картинки должна проверяться"
+
+
+def test_check_image_without_key_does_not_block(monkeypatch):
+    """Без GEMINI_API_KEY проверка не блокирует pipeline (passed=True)."""
+    monkeypatch.setattr(config, "GEMINI_API_KEY", "")
+    result = quality_checker.check_image("nonexistent.png", "any prompt")
+    assert result["passed"] is True
 
 
 def test_slugify_makes_safe_filenames():

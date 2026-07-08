@@ -139,6 +139,33 @@ def generate_from_preview(preview: dict, on_progress=None) -> dict:
         notify(f"Сцена {scene['id']}/{total_scenes}: картинка", scene_percent)
         image = image_generator.generate_image(image_prompt, scene["id"], run_id=run_id)
 
+        # Автопроверка на артефакты (только для реальных платных картинок):
+        # Gemini Vision смотрит на кадр ДО анимации; брак перегенерируется.
+        if config.IMAGE_PROVIDER != "stub" and config.IMAGE_QUALITY_CHECK:
+            for attempt in range(1, config.MAX_IMAGE_RETRIES + 2):
+                check = quality_checker.check_image(
+                    image["image_path"], image_prompt,
+                    negative_tags=scene.get("negative_tags", []),
+                )
+                if check["passed"]:
+                    break
+                if attempt > config.MAX_IMAGE_RETRIES:
+                    print(f"   ⚠️  Сцена {scene['id']}: артефакты остались после "
+                          f"{config.MAX_IMAGE_RETRIES} перегенераций — оставляю как есть")
+                    break
+                notify(f"Сцена {scene['id']}/{total_scenes}: артефакт, перегенерация {attempt}",
+                       scene_percent)
+                print(f"   🔁 Сцена {scene['id']}: перегенерация {attempt}/{config.MAX_IMAGE_RETRIES} "
+                      f"(причина: {check['reason']})")
+                try:
+                    image = image_generator.generate_image(
+                        image_prompt, scene["id"], run_id=f"{run_id}v{attempt + 1}",
+                    )
+                except RuntimeError as exc:
+                    # Упёрлись в лимит платных картинок — бюджет важнее идеала
+                    print(f"   ⚠️  Перегенерация остановлена: {exc}")
+                    break
+
         notify(f"Сцена {scene['id']}/{total_scenes}: видео", scene_percent)
         video = video_generator.generate_video(
             image["image_path"], scene["id"], run_id=run_id,
