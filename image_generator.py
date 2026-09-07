@@ -20,9 +20,19 @@ from PIL import Image, ImageDraw, ImageFont
 
 import config
 
-# Сколько реальных (платных) картинок уже создано за жизнь процесса.
+# Сколько реальных (платных) картинок уже создано за текущий запуск.
 # Служит предохранителем против случайных больших трат (см. MAX_IMAGES_PER_RUN).
 _paid_images_generated = 0
+
+
+def reset_paid_counter() -> None:
+    """Обнуляет счётчик платных картинок перед новым запуском.
+
+    Важно для долго живущего веб-сервера: без сброса лимит MAX_IMAGES_PER_RUN
+    накапливался бы за всё время работы сервера, а не считался поштучно за запуск.
+    """
+    global _paid_images_generated
+    _paid_images_generated = 0
 
 
 def generate_image(image_prompt: str, scene_id: int = 1, run_id: str = None) -> dict:
